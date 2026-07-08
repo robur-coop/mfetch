@@ -1,0 +1,4 @@
+(library
+ (name mfetch)
+ (modules mfetch edn)
+ (libraries fmt fpath))
