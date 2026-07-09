@@ -85,11 +85,6 @@ let decode_ssh str =
         Ok (host, path) in
     Ok (Git_ssh { user; host; port= None; path; branch })
 
-let directory_exists dirpath =
-  let dirname = Fpath.to_string dirpath in
-  if Sys.file_exists dirname && Sys.is_directory dirname
-  then Ok () else error_msgf "%a is not an existing directory" Fpath.pp dirpath
-
 let decode_package str =
   match String.split_on_char '.' str with
   | [] | [ _ ] -> Ok (Opam { name= str; version= None })
@@ -101,7 +96,7 @@ let is_ssh str = String.index_opt str '@' |> Option.is_some
 
 let is_valid_package_name =
   let fn = function
-    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '0' | '_' | '-' | '+' -> true
+    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '_' | '-' | '+' -> true
     | _ -> false in
   String.for_all fn
 
@@ -121,18 +116,17 @@ let of_string str =
         let dirpath = String.concat "#" (List.rev rem) in
         let* dirpath = Fpath.of_string dirpath in
         Ok (Fpath.to_dir_path dirpath, Some branch) in
-    let* () = directory_exists dirpath in
     Ok (Git_local { dirpath; branch })
   | Some ("git+http", str) ->
     let uri, branch = match List.rev (String.split_on_char '#' str) with
-      | [] | [ _ ] -> str, None
+      | [] | [ _ ] -> "http://" ^ str, None
       | branch :: rem ->
         let uri = "http://" ^ String.concat "#" (List.rev rem) in
         uri, Some branch in
     Ok (Git_http { uri; branch })
   | Some ("git+https", str) ->
     let uri, branch = match List.rev (String.split_on_char '#' str) with
-      | [] | [ _ ] -> str, None
+      | [] | [ _ ] -> "https://" ^ str, None
       | branch :: rem ->
         let uri = "https://" ^ String.concat "#" (List.rev rem) in
         uri, Some branch in
@@ -140,12 +134,11 @@ let of_string str =
   | Some ("file", rem) ->
     let* dirpath = Fpath.of_string rem in
     let dirpath = Fpath.to_dir_path dirpath in
-    let* () = directory_exists dirpath in
     Ok (Local { dirpath })
   | Some (("http" | "https"), _rem) ->
     let* archive = match List.rev (String.split_on_char '.' str) with
-      | "gz" :: "tar" :: _ -> Ok Tar_gz
-      | "bz2" :: "tar" :: _ -> Ok Tar_bz2
+      | "gz" :: "tar" :: _  -> Ok Tar_gz
+      | "bz2" :: "tar" :: _  | "tbz" :: _ -> Ok Tar_bz2
       | "tar" :: _ -> Ok Tar
       | "zip" :: _ -> Ok Zip
       | _ -> error_msgf "Impossible to recoginize the given archive: %S" str in
@@ -175,6 +168,9 @@ let to_string = function
     Fmt.str "%s@%s:%s%a" user host path pp_branch branch
   | Git_ssh { user; host; port= Some port; path; branch } ->
     Fmt.str "git+ssh://%s@%s:%d/%s%a" user host port path pp_branch branch
+
+let pp = Fmt.of_to_string to_string
+let equal = ( = )
 
 let from_filepath filepath =
   let parser ic () =
