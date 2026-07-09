@@ -1,6 +1,10 @@
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 let msgf fmt = Fmt.kstr (fun msg -> `Msg msg) fmt
 let ( let* ) = Result.bind
+let src = Logs.Src.create "mfetch.edn"
+
+module Log = (val Logs.src_log src : Logs.LOG)
+module Set = Set.Make (String)
 
 type archive =
   | Tar_gz
@@ -12,7 +16,7 @@ type t =
   | Opam of { name : string; version : string option }
   | Archive of { uri : string; archive : archive }
   | Git_http of { uri : string; branch : string option }
-| Git_ssh of { user : string; host : string; port : int option; path : string; branch : string option }
+  | Git_ssh of { user : string; host : string; port : int option; path : string; branch : string option }
   | Git_local of { dirpath : Fpath.t; branch : string option }
   | Local of { dirpath : Fpath.t }
 
@@ -64,6 +68,7 @@ let cut ~sep str =
     else scan (idx + 1) in
   scan 0
 
+(* user@host:path(#branch)? *)
 let decode_ssh str =
   let str, branch = match List.rev (String.split_on_char '#' str) with
     | [] -> str, None
@@ -85,7 +90,24 @@ let directory_exists dirpath =
   if Sys.file_exists dirname && Sys.is_directory dirname
   then Ok () else error_msgf "%a is not an existing directory" Fpath.pp dirpath
 
+let decode_package str =
+  match String.split_on_char '.' str with
+  | [] | [ _ ] -> Ok (Opam { name= str; version= None })
+  | name :: version ->
+    let version = String.concat "." version in
+    Ok (Opam { name; version= Some version })
+
 let is_ssh str = String.index_opt str '@' |> Option.is_some
+
+let is_valid_package_name =
+  let fn = function
+    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '0' | '_' | '-' | '+' -> true
+    | _ -> false in
+  String.for_all fn
+
+let is_package str = match String.split_on_char '.' str with
+  | [] | [ _ ] -> is_valid_package_name str
+  | str :: _ -> is_valid_package_name str
 
 let of_string str =
   match cut ~sep:"://" str with
@@ -130,7 +152,12 @@ let of_string str =
     Ok (Archive { uri= str; archive })
   | Some _ -> error_msgf "Unrecognized scheme on: %S" str
   | None when is_ssh str -> decode_ssh str
+  | None when is_package str -> decode_package str
   | None -> error_msgf "Invalid endpoint: %S" str
+
+let of_string_exn str = match of_string str with
+  | Ok v -> v
+  | Error (`Msg msg) -> Fmt.failwith "%s" msg
 
 let pp_branch ppf = function
   | None -> ()
@@ -148,3 +175,24 @@ let to_string = function
     Fmt.str "%s@%s:%s%a" user host path pp_branch branch
   | Git_ssh { user; host; port= Some port; path; branch } ->
     Fmt.str "git+ssh://%s@%s:%d/%s%a" user host port path pp_branch branch
+
+let from_filepath filepath =
+  let parser ic () =
+    let lexbuf = Lexing.from_channel ~with_positions:true ic in
+    match Bcfg.parser lexbuf with
+    | Error err -> error_msgf "%a: %a" Fpath.pp filepath Bcfg.pp_error_for_human err
+    | Ok cfg ->
+      let fn acc { Bcfg.name; _ } =
+        match of_string name with
+        | Ok edn -> Set.add (to_string edn) acc
+        | Error _ ->
+          Log.warn (fun m -> m "Ignore endpoint %S" name);
+          acc in
+      let edns = List.fold_left fn Set.empty cfg in
+      let edns = Set.elements edns in
+      let edns = List.map of_string_exn edns in
+      Ok edns in
+  match open_in_bin (Fpath.to_string filepath) with
+  | ic -> Fun.protect ~finally:(fun () -> close_in ic) (parser ic)
+  | exception (Sys_error err) -> error_msgf "%a: %s" Fpath.pp filepath err
+      
