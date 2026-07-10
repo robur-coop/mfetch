@@ -1,4 +1,4 @@
 (library
  (name mfetch)
- (modules mfetch edn)
- (libraries logs bcfg fmt fpath))
+ (modules mfetch edn version protocol smart clone)
+ (libraries httpcats flux logs bcfg fmt fpath))
