@@ -9,7 +9,8 @@ let tree_of_commit str =
   | None -> None
   | Some eol ->
       begin match String.split_on_char ' ' (String.sub str 0 eol) with
-      | [ "tree"; hex ] -> decode_opt hex
+      | [ "tree"; hex ] ->
+          decode_opt hex |> Option.map Carton.Uid.unsafe_of_string
       | _ -> None
       end
 
@@ -19,11 +20,12 @@ let target_of_tag str =
   | None -> None
   | Some eol ->
       begin match String.split_on_char ' ' (String.sub str 0 eol) with
-      | [ "object"; hex ] -> decode_opt hex
+      | [ "object"; hex ] ->
+          decode_opt hex |> Option.map Carton.Uid.unsafe_of_string
       | _ -> None
       end
 
-type entry = { mode : int; name : string; uid : string }
+type entry = { mode : int; name : string; uid : Carton.Uid.t }
 
 let entries ~uid_length str =
   let rec go acc pos =
@@ -41,11 +43,12 @@ let entries ~uid_length str =
                 let mode = String.sub str pos (sp - pos) in
                 let name = String.sub str (sp + 1) (nul - sp - 1) in
                 let uid = String.sub str (nul + 1) uid_length in
-                match inf_of_string_opt ("0o" ^ mode) with
+                let uid = Carton.Uid.unsafe_of_string uid in
+                match int_of_string_opt ("0o" ^ mode) with
                 | Some mode ->
                     go ({ mode; name; uid } :: acc) (nul + 1 + uid_length)
                 | None -> error_msgf "Invalid mode %S" mode
               end
-            | None -> error_msgf "Malformed tree object"
+            | _ -> error_msgf "Malformed tree object"
             end in
   go [] 0

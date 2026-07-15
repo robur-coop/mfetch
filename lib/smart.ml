@@ -12,7 +12,7 @@ let pp_error ppf = function
 
 type refs = {
   refs : (string * string) list (* refname, oid (hex) *);
-  head : string; (* oid (hex) *)
+  head : Carton.Uid.t; (* oid (hex) *)
   head_symref : string option (* refs/heads/main *);
 }
 
@@ -78,22 +78,28 @@ let ls_refs ctx =
   let* refs, head_symref = go [] None ctx in
   let* head =
     match (List.assoc_opt "HEAD" refs, head_symref) with
-    | Some head, _ when head <> "unborn" -> Protocol.return head
+    | Some head, _ when head <> "unborn" ->
+        let head = Ohex.decode head in
+        let head = Carton.Uid.unsafe_of_string head in
+        Protocol.return head
     | _, Some symref ->
         begin match List.assoc_opt symref refs with
-        | Some head -> Protocol.return head
+        | Some head ->
+            let head = Ohex.decode head in
+            let head = Carton.Uid.unsafe_of_string head in
+            Protocol.return head
         | None -> Protocol.error `No_branch
         end
     | _ -> Protocol.error `No_branch in
   Protocol.return { refs; head; head_symref }
 
-let fetch ~want q ctx =
+let fetch ~(want : Carton.Uid.t) q ctx =
   let* () = Protocol.encode_pkt ctx "command=fetch" in
   let* () = Protocol.encode_pkt ctx "object-format=sha1" in
   let* () = Protocol.encode_delim_pkt ctx in
   let* () = Protocol.encode_pkt ctx "ofs-delta" in
   let* () = Protocol.encode_pkt ctx "no-progress" in
-  let* () = Protocol.encode_pkt ctx "want %s" want in
+  let* () = Protocol.encode_pkt ctx "want %s" (Ohex.encode (want :> string)) in
   let* () = Protocol.encode_pkt ctx "done" in
   (* NOTE(dinosaure): no negotiation *)
   let* () =
