@@ -1,4 +1,15 @@
 (library
  (name mfetch)
- (modules mfetch edn version protocol smart git git_object git_index)
- (libraries carton-miou.unix httpcats flux logs bcfg fmt fpath))
+ (modules mfetch edn version archive protocol smart git git_object git_index)
+ (libraries
+  carton-miou.unix
+  httpcats
+  tar
+  flux
+  fluxt.unzip
+  fluxt.gz
+  fluxt.tar
+  logs
+  bcfg
+  fmt
+  fpath))

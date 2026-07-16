@@ -5,6 +5,7 @@ let inhibit fn = try fn () with _exn -> ()
 let ( let@ ) finally fn = Fun.protect ~finally fn
 
 type kind = [ `Branch of string | `Tag of string | `Detached ]
+type error = [ Smart.error | `Msg of string ]
 
 let chop ~prefix str =
   if String.starts_with ~prefix str
@@ -21,8 +22,6 @@ let is_hex str =
   String.length str = 40 && String.for_all fn str
 
 module Log = (val Logs.src_log src : Logs.LOG)
-
-type error = [ Smart.error | `Msg of string ]
 
 let pp_error ppf = function
   | #Smart.error as err -> Smart.pp_error ppf err
@@ -106,17 +105,15 @@ let request ~resolver ?(meth = `GET) ?(headers = []) ?body uri state =
   let fn _meta _req resp () = function
     | Some str when is_redirection resp -> push str
     | _ -> () in
-  let producer =
+  let prm =
     Miou.async @@ fun () ->
+    let@ () = fun () -> inhibit @@ fun () -> Flux.Bqueue.close q in
     let body = Option.map (fun str -> Httpcats.String str) body in
-    let result =
-      Httpcats.request ~resolver ~follow_redirect:true ~meth ~headers ?body ~fn
-        ~uri () in
-    let () = inhibit @@ fun () -> Flux.Bqueue.close q in
-    result in
+    Httpcats.request ~resolver ~follow_redirect:true ~meth ~headers ?body ~fn
+      ~uri () in
   let result = unroll (q, "") state in
   Flux.Bqueue.halt q ;
-  let status = Miou.await producer in
+  let status = Miou.await prm in
   match (result, status) with
   | (Error _ as err), _ -> err
   | Ok v, Ok (Ok (resp, ())) when resp.Httpcats.status = `OK -> Ok v
