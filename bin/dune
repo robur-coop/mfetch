@@ -1,4 +1,4 @@
 (executable
  (name main)
  (public_name mfetch)
- (libraries mfetch progress))
+ (libraries mirage-crypto-rng-miou-unix mfetch progress))

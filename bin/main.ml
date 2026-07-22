@@ -221,3 +221,44 @@ let process ~force ~resolver ~progress ~dst previous { target; edns; action } =
       Ok { Mfetch.State.target; edns; source; version; k; commit; hash } in
     Ok (Fetched entry)
   end
+
+let run_fetch quiet root filepath target with_dune_file force jobs no_progress
+    config =
+  Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
+  Miou_unix.run @@ fun () ->
+  let result =
+    let* edns = Mfetch.Edn.from_filepath filepath in
+    let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
+    let@ () = fun () -> Mirage_crypto_rng_miou_unix.kill rng in
+    let daemon, happy_eyeballs = Happy_eyeballs_miou_unix.create () in
+    let@ () = fun () -> Happy_eyeballs_miou_unix.kill daemon in
+    let resolver = `Happy happy_eyeballs in
+    let state = Fpath.(target / ".mfetch.state") in
+    let* previous = Mfetch.State.load state in
+    let items = coalesce ~root edns in
+    let progress =
+      Prgrss.make ~config
+        ((not no_progress) && (not quiet) && Unix.isatty Unix.stderr) in
+    let@ () = progress.Prgress.finally in
+    let rem =
+      List.filter_map (function Job job -> Some job | _ -> None) items in
+    let q = Flux.Bqueue.(create with_close) (List.length rem + 1) in
+    List.iter (Flux.Bqueue.put q) rem ;
+    Flux.Bqueue.close q ;
+    let worker () =
+      let rec go acc =
+        match Flux.Bqueue.get q with
+        | None -> List.rev acc
+        | Some job ->
+            let v =
+              process ~force ~resolver ~progress ~dst:target previous job in
+            go (v :: acc) in
+      go [] in
+    let results =
+      Miou.parallel worker (List.init (Int.max 1 jobs) (Fun.const ())) in
+    assert false in
+  match result with
+  | Ok _ -> 0
+  | Error (`Msg msg) ->
+      Logs.err (fun m -> m "%s" msg) ;
+      2
