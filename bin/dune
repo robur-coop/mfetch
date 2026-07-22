@@ -1,0 +1,4 @@
+(executable
+ (name mfetch)
+ (public_name mfetch)
+ (libraries mfetch))

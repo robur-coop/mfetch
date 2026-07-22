@@ -22,6 +22,45 @@ type t =
   | Git_local of { dirpath : Fpath.t; branch : string option }
   | Local of { dirpath : Fpath.t }
 
+(* ugly! *)
+external reraise : exn -> 'a = "%reraise"
+
+let chop_archive_extension filepath =
+  let exception Return of string in
+  let fn ext =
+    try
+      let name = Filename.chop_suffix filepath ext in
+      raise (Return name)
+    with
+    | Return name -> reraise (Return name)
+    | _ -> () in
+  try
+    List.iter fn [ ".tar.gz"; ".tbz"; ".zip" ] ;
+    filepath
+  with Return name -> name
+
+(* NOTE(dinosaure): clean-up queries and anchor (often used for commits) from
+   an uri (git+http(s)? or from an archive). *)
+let path_of_uri uri =
+  let uri =
+    match String.index_opt uri '?' with
+    | None -> uri
+    | Some idx -> String.sub uri 0 idx in
+  match String.index_opt uri '#' with
+  | None -> uri
+  | Some idx -> String.sub uri 0 idx
+
+let name = function
+  | Opam { name; _ } -> name
+  | Archive { uri; _ } ->
+      chop_archive_extension (Filename.basename (path_of_uri uri))
+  | Git_http { uri; _ } ->
+      let path = path_of_uri uri in
+      Filename.remove_extension (Filename.basename path)
+  | Git_ssh { path; _ } -> Filename.remove_extension (Filename.basename path)
+  | Git_local { dirpath; _ } -> Fpath.(basename (rem_ext dirpath))
+  | Local { dirpath } -> Fpath.basename dirpath
+
 (* git+ssh://user@host(:port)?/path(#branch)? *)
 let decode_git_ssh_uri str =
   let uri, branch =
