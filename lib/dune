@@ -1,6 +1,17 @@
 (library
  (name mfetch)
- (modules mfetch edn version archive protocol smart git git_object git_index opam)
+ (modules
+  mfetch
+  state
+  edn
+  version
+  archive
+  protocol
+  smart
+  git
+  git_object
+  git_index
+  opam)
  (libraries
   carton-miou.unix
   opam-file-format

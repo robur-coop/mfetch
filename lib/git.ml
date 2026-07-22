@@ -395,6 +395,8 @@ let checkout ~origin ~into (((head : Carton.Uid.t), (kind : kind)) as reference)
     | `Branch _ -> Ok () in
   Ok head
 
+type ssh = { user : string; host : string; port : int option; path : string }
+
 let clone ~resolver ~remote ?branch ?(reporter = ignore) ~origin into =
   let* () =
     if Sys.file_exists (Fpath.to_string into)
@@ -417,7 +419,7 @@ let clone ~resolver ~remote ?branch ?(reporter = ignore) ~origin into =
   let reference =
     match remote with
     | `HTTP uri -> fetch_through_http ~resolver uri ?branch q
-    | `SSH (user, host, port, path) ->
+    | `SSH { user; host; port; path } ->
         fetch_through_ssh ~user ~host ?port ~path ?branch q
     | `Local dirpath -> fetch_local_git_repository dirpath ?branch q in
   let () = inhibit @@ fun () -> Flux.Bqueue.close q in

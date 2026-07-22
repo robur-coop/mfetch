@@ -152,7 +152,8 @@ let download ~resolver ?(checksum = []) ?(reporter = ignore)
   let q = Flux.Bqueue.(create with_close_and_halt) 0x7ff in
   let push str = inhibit @@ fun () -> Flux.Bqueue.put q str in
   let on_total = once on_total in
-  let feeders = List.map (fun (k, e) -> Digest.of_hash k e) checksum in
+  let feeders =
+    List.map (fun (Opam.Hash (k, e)) -> Digest.of_hash k e) checksum in
   let fn _meta _req (resp : Httpcats.response) () = function
     | Some str when not (is_redirection resp) ->
         let hdrs = resp.Httpcats.headers in
@@ -198,3 +199,72 @@ let download ~resolver ?(checksum = []) ?(reporter = ignore)
   | Error err ->
       let _ = Bos.OS.Dir.delete ~recurse:true tmp in
       Error err
+
+let excluded = [ ".git"; ".hg"; "_darcs"; "_build"; "_opam"; ".mfetch.state" ]
+
+let rec copy_tree ~reporter ~src ~dst =
+  mkdir_p dst ;
+  let entries = Sys.readdir (Fpath.to_string src) in
+  Array.sort String.compare entries ;
+  let fn entry =
+    if not (List.mem entry excluded)
+    then begin
+      let src = Fpath.(src / entry) and dst = Fpath.(dst / entry) in
+      let stat = Unix.lstat (Fpath.to_string src) in
+      match stat.Unix.st_kind with
+      | Unix.S_DIR -> copy_tree ~reporter ~src ~dst
+      | Unix.S_LNK ->
+          Unix.symlink
+            (Unix.readlink (Fpath.to_string src))
+            (Fpath.to_string dst)
+      | Unix.S_REG ->
+          let mode =
+            if stat.Unix.st_perm land 0o100 <> 0 then 0o755 else 0o644 in
+          let ic = In_channel.open_bin (Fpath.to_string src) in
+          let@ () = fun () -> In_channel.close ic in
+          let oc =
+            open_out_gen
+              [ Open_wronly; Open_creat; Open_trunc; Open_binary ]
+              mode (Fpath.to_string dst) in
+          let@ () = fun () -> close_out oc in
+          let buf = Bytes.create 0x7ff in
+          let rec go () =
+            let len = In_channel.input ic buf 0 (Bytes.length buf) in
+            if len > 0
+            then begin
+              output_string oc (Bytes.sub_string buf 0 len) ;
+              reporter len ;
+              go ()
+            end in
+          go ()
+      | _ -> Log.warn (fun m -> m "Skip the special file %a" Fpath.pp src)
+    end in
+  Array.iter fn entries
+
+let copy ?(reporter = ignore) ~src into =
+  let* () =
+    if Sys.file_exists (Fpath.to_string into)
+    then error_msgf "%a already exists" Fpath.pp into
+    else if
+      not
+        (Sys.file_exists (Fpath.to_string src)
+        && Sys.is_directory (Fpath.to_string src))
+    then error_msgf "%a is not a directory" Fpath.pp src
+    else Ok () in
+  let dirpath = Fpath.parent into in
+  let* _ = Bos.OS.Dir.create ~path:true dirpath in
+  let tmp = Fpath.(dirpath / Fmt.str ".mfetch.%s.tmp" (basename into)) in
+  let* _ = Bos.OS.Dir.delete ~recurse:true tmp in
+  match copy_tree ~reporter ~src ~dst:tmp with
+  | () ->
+      begin try
+        Unix.rename (Fpath.to_string tmp) (Fpath.to_string into) ;
+        Ok ()
+      with exn ->
+        let _ = Bos.OS.Dir.delete ~recurse:true tmp in
+        error_msgf "Unable to promote %a: %s" Fpath.pp into
+          (Printexc.to_string exn)
+      end
+  | exception exn ->
+      let _ = Bos.OS.Dir.delete ~recurse:true tmp in
+      error_msgf "Unable to copy %a: %s" Fpath.pp src (Printexc.to_string exn)
