@@ -239,7 +239,7 @@ let run_fetch quiet root filepath target with_dune_file force jobs no_progress
     let progress =
       Prgrss.make ~config
         ((not no_progress) && (not quiet) && Unix.isatty Unix.stderr) in
-    let@ () = progress.Prgress.finally in
+    let@ () = progress.Prgrss.finally in
     let rem =
       List.filter_map (function Job job -> Some job | _ -> None) items in
     let q = Flux.Bqueue.(create with_close) (List.length rem + 1) in

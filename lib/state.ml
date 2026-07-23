@@ -1,5 +1,7 @@
 let ( let@ ) finally fn = Fun.protect ~finally fn
+let ( let* ) = Result.bind
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
+let msgf fmt = Fmt.kstr (fun msg -> `Msg msg) fmt
 
 type entry = {
   target : string;
@@ -62,3 +64,71 @@ let hash_of_tree root =
   | exception Sys_error err -> error_msgf "%s" err
   | exception Unix.Unix_error (err, _, _) ->
       error_msgf "%a: %s" Fpath.pp root (Unix.error_message err)
+
+let kind_of_string = function
+  | "archive" -> Ok `Archive
+  | "git" -> Ok `Git
+  | v -> error_msgf "Invalid type: %s" v
+
+let of_bcfg filepath cfg =
+  let fields name { Bcfg.children; _ } =
+    let fn = function
+      | { Bcfg.name = name'; parameters = [ v ]; _ } when name' = name -> Some v
+      | _ -> None in
+    List.filter_map fn children in
+  let field name directive =
+    match fields name directive with v :: _ -> Some v | [] -> None in
+  let require name directive =
+    let none = msgf "%a: missing %s field" Fpath.pp filepath name in
+    field name directive |> Option.to_result ~none in
+  let fn acc directive =
+    let* acc = acc in
+    match directive with
+    | { Bcfg.name = "version"; parameters = [ "1" ]; _ } -> Ok acc
+    | { Bcfg.name = "version"; parameters; _ } ->
+        error_msgf "%a: unsupported version %a" Fpath.pp filepath
+          Fmt.(Dump.list string)
+          parameters
+    | { Bcfg.name = "package"; parameters = [ target ]; _ } ->
+        let* edns =
+          match fields "endpoint" directive with
+          | [] ->
+              error_msgf "%a: missing \"endpoint\" field for %s" Fpath.pp
+                filepath target
+          | edns ->
+              let fn acc edn =
+                let* acc = acc in
+                let* edn = Edn.of_string edn in
+                Ok (edn :: acc) in
+              List.fold_left fn (Ok []) edns in
+        let source = field "source" directive in
+        let version = field "version" directive in
+        let* k = require "type" directive in
+        let* k = kind_of_string k in
+        let commit = field "commit" directive in
+        let commit = Option.map Carton.Uid.unsafe_of_string commit in
+        (* TODO(dinosaure): verify our [commit]. *)
+        let* hash = require "hash" directive in
+        let* hash =
+          match Digestif.SHA256.of_hex_opt hash with
+          | Some hash -> Ok hash
+          | None -> error_msgf "%a: invalid hash %S" Fpath.pp filepath hash
+        in
+        Ok ({ target; edns; source; version; k; commit; hash } :: acc)
+    | _ -> Ok acc in
+  let* entries = List.fold_left fn (Ok []) cfg in
+  Ok (List.rev entries)
+
+let load filepath =
+  match open_in_bin (Fpath.to_string filepath) with
+  | exception Sys_error _ -> Ok []
+  | ic ->
+      let@ () = fun () -> close_in ic in
+      let lexbuf = Lexing.from_channel ~with_positions:true ic in
+      let* cfg =
+        match Bcfg.parser lexbuf with
+        | Ok cfg -> Ok cfg
+        | Error err ->
+            error_msgf "%a: %a" Fpath.pp filepath Bcfg.pp_error_for_human err
+      in
+      of_bcfg filepath cfg
