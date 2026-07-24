@@ -1,4 +1,11 @@
 (executable
  (name main)
  (public_name mfetch)
- (libraries mirage-crypto-rng-miou-unix mfetch progress))
+ (libraries
+  logs.cli
+  fmt.cli
+  fmt.tty
+  cmdliner
+  mirage-crypto-rng-miou-unix
+  mfetch
+  progress))

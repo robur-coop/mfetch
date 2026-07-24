@@ -118,7 +118,7 @@ let key_of_action = function
       Fmt.str "git:%s#%a" remote Fmt.(option string) branch
 
 type job = { target : string; edns : Mfetch.Edn.t list; action : action }
-type entry = Job of job | Unresolved of { target : string; err : string }
+type entry = Job of job | Unresolved of { target : string; msg : string }
 
 let coalesce ~root edns =
   let tbl = Hashtbl.create 0x7ff in
@@ -143,7 +143,7 @@ let coalesce ~root edns =
   let items = List.rev (List.fold_left fn [] edns) in
   let fn = function
     | `Key key -> Job (Hashtbl.find tbl key)
-    | `Unresolved (target, err) -> Unresolved { target; err } in
+    | `Unresolved (target, msg) -> Unresolved { target; msg } in
   let items = List.map fn items in
   let module M = Map.Make (String) in
   let count =
@@ -155,11 +155,11 @@ let coalesce ~root edns =
     List.fold_left fn M.empty items in
   let fn = function
     | Job ({ target; _ } as job) when M.find target count > 1 ->
-        let err =
+        let msg =
           Fmt.str "several distinct sources for the same target (%a)"
             Fmt.(list ~sep:(any ", ") Mfetch.Edn.pp)
             job.edns in
-        Unresolved { target; err }
+        Unresolved { target; msg }
     | item -> item in
   List.map fn items
 
@@ -222,6 +222,33 @@ let process ~force ~resolver ~progress ~dst previous { target; edns; action } =
     Ok (Fetched entry)
   end
 
+let update_dune_file ~target:_ = assert false
+
+let pp_status ppf = function
+  | `Ok -> Fmt.(styled `Green string) ppf "ok"
+  | `Skipped -> Fmt.(styled `Yellow string) ppf "skipped"
+  | `Failed -> Fmt.(styled `Red string) ppf "failed"
+  | `Modified -> Fmt.(styled `Yellow string) ppf "modified"
+  | `Missing -> Fmt.(styled `Red string) ppf "missing"
+  | `Not_fetched -> Fmt.(styled `Yellow string) ppf "not fetched"
+
+let show_results results =
+  let pp_merged ppf = function
+    | [] | [ _ ] -> ()
+    | edns -> Fmt.pf ppf " (%a)" Fmt.(list ~sep:(any ", ") Mfetch.Edn.pp) edns
+  in
+  let fn (target, edns, outcome) =
+    match outcome with
+    | Ok (Fetched _) ->
+        Fmt.pr "%-32s %a%a\n%!" target pp_status `Ok pp_merged edns
+    | Ok (Skipped { msg; _ }) ->
+        Fmt.pr "%-32s %a (%s)%a\n%!" target pp_status `Skipped msg pp_merged
+          edns
+    | Error err ->
+        Fmt.pr "%-32s %a: %a\n%!" target pp_status `Failed Mfetch.Git.pp_error
+          err in
+  List.iter fn results
+
 let run_fetch quiet root filepath target with_dune_file force jobs no_progress
     config =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
@@ -252,13 +279,72 @@ let run_fetch quiet root filepath target with_dune_file force jobs no_progress
         | Some job ->
             let v =
               process ~force ~resolver ~progress ~dst:target previous job in
-            go (v :: acc) in
+            go ((job.target, v) :: acc) in
       go [] in
-    let results =
-      Miou.parallel worker (List.init (Int.max 1 jobs) (Fun.const ())) in
-    assert false in
+    let results : (string * (outcome, [> Mfetch.Git.error ]) result) list =
+      Miou.parallel worker (List.init (Int.max 1 jobs) (Fun.const ()))
+      |> List.concat_map @@ function
+         | Ok results -> results
+         | Error exn -> raise exn in
+    let fn = function
+      | Unresolved { target; msg } -> (target, [], Error (`Msg msg))
+      | Job job ->
+          let _, outcome = List.find (fun (t, _) -> t = job.target) results in
+          (job.target, job.edns, outcome) in
+    let results = List.map fn items in
+    if not quiet then show_results results ;
+    let fn (_, _, outcome) =
+      match outcome with
+      | Ok (Fetched entry | Skipped { entry = Some entry; _ }) -> Some entry
+      | Ok (Skipped { entry = None; _ }) -> None
+      | Error _ -> None in
+    let entries = List.filter_map fn results in
+    let* () =
+      if entries <> [] || Sys.file_exists (Fpath.to_string state)
+      then begin
+        let* _ = Bos.OS.Dir.create ~path:true target in
+        let lock =
+          Mfetch.Opam.Lock.flock `Lock_write
+            Fpath.(target / ".mfetch.state.lock") in
+        let@ () = fun () -> Mfetch.Opam.Lock.update `Lock_none lock in
+        Mfetch.State.save state entries
+      end
+      else Ok () in
+    let* () = if with_dune_file then update_dune_file ~target else Ok () in
+    let failed =
+      let fn = function _, _, Error _ -> true | _ -> false in
+      List.exists fn results in
+    Ok (if failed then 1 else 0) in
   match result with
   | Ok _ -> 0
   | Error (`Msg msg) ->
       Logs.err (fun m -> m "%s" msg) ;
       2
+
+open Cmdliner
+open Mfetch_cli
+
+let term =
+  let open Term in
+  const run_fetch
+  $ setup_logs
+  $ setup_opam_root
+  $ file
+  $ target
+  $ with_dune_file
+  $ force
+  $ jobs
+  $ no_progress
+  $ setup_progress
+
+let fetch =
+  let doc = "Fetch and vendor the sources listed in the $(b,_mfetch) file." in
+  Cmd.v (Cmd.info "fetch" ~doc) term
+
+let cmd =
+  let doc = "A tool to fetch and vendor sources of OPAM packages." in
+  let man = [] in
+  let info = Cmd.info "mfetch" ~doc ~man in
+  Cmd.group ~default:term info [ fetch ]
+
+let () = exit (Cmd.eval' cmd)

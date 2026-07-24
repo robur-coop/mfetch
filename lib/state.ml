@@ -70,6 +70,8 @@ let kind_of_string = function
   | "git" -> Ok `Git
   | v -> error_msgf "Invalid type: %s" v
 
+let string_of_kind = function `Archive -> "archive" | `Git -> "git"
+
 let of_bcfg filepath cfg =
   let fields name { Bcfg.children; _ } =
     let fn = function
@@ -119,6 +121,32 @@ let of_bcfg filepath cfg =
   let* entries = List.fold_left fn (Ok []) cfg in
   Ok (List.rev entries)
 
+let to_bcfg entries =
+  let directive ?(children = []) name parameters =
+    { Bcfg.name; parameters; children } in
+  let fn { target; edns; source; version; k; commit; hash } =
+    let children =
+      List.concat
+        [
+          List.map (fun edn -> directive "endpoint" [ Edn.to_string edn ]) edns;
+          begin match source with
+          | Some src -> [ directive "source" [ src ] ]
+          | None -> []
+          end;
+          begin match version with
+          | Some v -> [ directive "version" [ v ] ]
+          | None -> []
+          end;
+          [ directive "type" [ string_of_kind k ] ];
+          begin match commit with
+          | Some commit -> [ directive "commit" [ (commit :> string) ] ]
+          | None -> []
+          end;
+          [ directive "hash" [ Digestif.SHA256.to_hex hash ] ];
+        ] in
+    directive ~children "package" [ target ] in
+  directive "version" [ "1" ] :: List.map fn entries
+
 let load filepath =
   match open_in_bin (Fpath.to_string filepath) with
   | exception Sys_error _ -> Ok []
@@ -132,3 +160,12 @@ let load filepath =
             error_msgf "%a: %a" Fpath.pp filepath Bcfg.pp_error_for_human err
       in
       of_bcfg filepath cfg
+
+let save filepath entries =
+  let cfg = to_bcfg entries in
+  match open_out_bin (Fpath.to_string filepath) with
+  | exception Sys_error err -> error_msgf "%s" err
+  | oc ->
+      let@ () = fun () -> close_out oc in
+      Seq.iter (output_string oc) (Bcfg.emitter cfg) ;
+      Ok ()
