@@ -108,7 +108,11 @@ let of_bcfg filepath cfg =
         let* k = require "type" directive in
         let* k = kind_of_string k in
         let commit = field "commit" directive in
-        let commit = Option.map Carton.Uid.unsafe_of_string commit in
+        let commit =
+          match Option.map Ohex.decode commit with
+          | Some commit -> Some (Carton.Uid.unsafe_of_string commit)
+          | None -> None
+          | exception _exn -> None in
         (* TODO(dinosaure): verify our [commit]. *)
         let* hash = require "hash" directive in
         let* hash =
@@ -139,7 +143,8 @@ let to_bcfg entries =
           end;
           [ directive "type" [ string_of_kind k ] ];
           begin match commit with
-          | Some commit -> [ directive "commit" [ (commit :> string) ] ]
+          | Some commit ->
+              [ directive "commit" [ Ohex.encode (commit :> string) ] ]
           | None -> []
           end;
           [ directive "hash" [ Digestif.SHA256.to_hex hash ] ];

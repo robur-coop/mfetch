@@ -228,11 +228,11 @@ let rec checkout_tree pack ~worktree ~prefix (uid : Carton.Uid.t) acc =
   let fn acc { Git_object.mode; name; uid } =
     let* acc = acc in
     let path = if prefix = "" then name else prefix / name in
-    let filepath = Fpath.(worktree / path) in
+    let filepath = Fpath.(worktree // v path) in
     match mode with
     | 0o40000 ->
         let* _ = Bos.OS.Dir.create ~path:true filepath in
-        checkout_tree pack ~worktree ~prefix:(Fpath.to_string filepath) uid acc
+        checkout_tree pack ~worktree ~prefix:path uid acc
     | 0o120000 ->
         let value = load pack uid in
         let target = Carton.Value.string value in
@@ -338,19 +338,21 @@ let write_refs ~git_dir ~origin ((uid : Carton.Uid.t), kind) =
     Fmt.str
       "[remote \"origin\"]\n\
        \turl = %s\n\
-       \tfetch = +refs/heads/*:refs/removes/origin/*\n"
+       \tfetch = +refs/heads/*:refs/remotes/origin/*\n"
       origin in
-  let open Bos.OS.File in
+  let writef filepath =
+    let _ = Bos.OS.Dir.create ~path:true (Fpath.parent filepath) in
+    Bos.OS.File.writef filepath in
   match kind with
   | `Branch branch ->
       let* () = writef Fpath.(git_dir / "HEAD") "ref: refs/heads/%s\n" branch in
-      let* () = writef Fpath.(git_dir / "refs" / "heads") "%s\n" uid in
+      let* () = writef Fpath.(git_dir / "refs" / "heads" / branch) "%s\n" uid in
       let* () =
         writef
           Fpath.(git_dir / "refs" / "remotes" / "origin" / branch)
           "%s\n" uid in
       let section =
-        Fmt.str "[branch \"%s\"]\n\tremote = origin\n\tmerge = regs/heads/%s\n"
+        Fmt.str "[branch \"%s\"]\n\tremote = origin\n\tmerge = refs/heads/%s\n"
           branch branch in
       writef Fpath.(git_dir / "config") "%s%s%s" core remote section
   | `Tag tag ->

@@ -101,7 +101,7 @@ let fetch ~(want : Carton.Uid.t) q ctx =
   let* () = Protocol.encode_pkt ctx "no-progress" in
   let* () = Protocol.encode_pkt ctx "want %s" (Ohex.encode (want :> string)) in
   let* () = Protocol.encode_pkt ctx "done" in
-  (* NOTE(dinosaure): no negotiation *)
+  let* () = Protocol.encode_flush_pkt ctx in
   let* () =
     let* pkt = Protocol.decode_pkt ctx in
     match String.trim pkt with

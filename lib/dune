@@ -16,6 +16,7 @@
   carton-miou.unix
   opam-file-format
   httpcats
+  ohex
   tar
   flux
   fluxt.unzip
