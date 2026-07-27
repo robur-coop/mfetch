@@ -13,4 +13,5 @@ depends: [
   "ocaml"       {>= "4.07.0"}
   "dune"        {>= "2.8.0"}
   "httpcats"
+  "carton-miou"
 ]
