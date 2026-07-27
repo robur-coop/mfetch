@@ -23,10 +23,13 @@ module Log = (val Logs.src_log src : Logs.LOG)
 let tbz_into dst from =
   let cmd = Fmt.str "tar -xjf - -C %s" (Filename.quote (Fpath.to_string dst)) in
   let oc = Unix.open_process_out cmd in
-  let fn () = Flux.Source.each (output_string oc) from in
-  let finally () = ignore (Unix.close_process_out oc) in
-  Fun.protect ~finally fn ;
-  match Unix.close_process_out oc with
+  let status =
+    match Flux.Source.each (output_string oc) from with
+    | () -> Unix.close_process_out oc
+    | exception exn ->
+        inhibit (fun () -> ignore (Unix.close_process_out oc)) ;
+        raise exn in
+  match status with
   | Unix.WEXITED 0 -> ()
   | Unix.WEXITED n -> Fmt.failwith "tar -xj exited with %d" n
   | Unix.WSIGNALED _ | Unix.WSTOPPED _ -> Fmt.failwith "tar -xj killed"
@@ -178,6 +181,7 @@ let download ~resolver ?(checksum = []) ?(reporter = ignore)
     | exn -> error_msgf "%s" (Printexc.to_string exn) in
   Flux.Source.dispose from ;
   let result =
+    Result.iter_error (fun _ -> Miou.cancel prm) result ;
     let* () = result in
     let* () =
       match Miou.await prm with
