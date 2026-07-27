@@ -6,6 +6,6 @@
   fmt.cli
   fmt.tty
   cmdliner
-  mirage-crypto-rng-miou-unix
+  mirage-crypto-rng.unix
   mfetch
   progress))

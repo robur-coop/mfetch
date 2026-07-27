@@ -252,11 +252,10 @@ let show_results results =
 let run_fetch quiet root filepath target with_dune_file force jobs no_progress
     config =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
+  Mirage_crypto_rng_unix.use_default () ;
   Miou_unix.run @@ fun () ->
   let result =
     let* edns = Mfetch.Edn.from_filepath filepath in
-    let rng = Mirage_crypto_rng_miou_unix.(initialize (module Pfortuna)) in
-    let@ () = fun () -> Mirage_crypto_rng_miou_unix.kill rng in
     let daemon, happy_eyeballs = Happy_eyeballs_miou_unix.create () in
     let@ () = fun () -> Happy_eyeballs_miou_unix.kill daemon in
     let resolver = `Happy happy_eyeballs in
