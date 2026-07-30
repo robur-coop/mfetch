@@ -86,9 +86,11 @@ let rec unroll (q, rem) = function
   | Return v -> Ok v
   | Write _ -> assert false
   | Read { k; buffer; off; len } -> begin
-      let chunk = if rem = "" then Some rem else Flux.Bqueue.get q in
-      match chunk with
-      | None -> unroll (q, rem) (k `End)
+      let rec next = function
+        | "" -> Option.bind (Flux.Bqueue.get q) next
+        | str -> Some str in
+      match next rem with
+      | None -> unroll (q, "") (k `End)
       | Some str ->
           let len = Int.min len (String.length str) in
           Bytes.blit_string str 0 buffer off len ;

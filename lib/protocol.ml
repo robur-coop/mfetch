@@ -10,7 +10,7 @@ module Decoder = struct
   let make len = { buffer = Bytes.make len '\000'; pos = 0; max = 0 }
 
   let leftover { buffer; pos; max } =
-    let len = pos - max in
+    let len = max - pos in
     Bytes.sub_string buffer pos len
 
   type ('v, 'err) state =
