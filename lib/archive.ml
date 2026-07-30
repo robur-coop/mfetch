@@ -141,7 +141,7 @@ let promote ~tmp ~into =
       Unix.rmdir (Fpath.to_string tmp)
   | _ -> Unix.rename (Fpath.to_string tmp) (Fpath.to_string into)
 
-let download ~resolver ?(checksum = []) ?(reporter = ignore)
+let download ~resolver ?authenticator ?(checksum = []) ?(reporter = ignore)
     ?(on_total = ignore) (uri, kind, into) =
   let* () =
     if Sys.file_exists (Fpath.to_string into)
@@ -170,7 +170,8 @@ let download ~resolver ?(checksum = []) ?(reporter = ignore)
   let prm =
     Miou.async @@ fun () ->
     let@ () = fun () -> inhibit @@ fun () -> Flux.Bqueue.close q in
-    Httpcats.request ~resolver ~follow_redirect:true ~fn ~uri () in
+    Httpcats.request ~resolver ?authenticator ~follow_redirect:true ~fn ~uri ()
+  in
   let from = Flux.Source.bqueue ~stop:`Halt q in
   let result =
     try

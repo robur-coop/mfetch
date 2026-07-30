@@ -6,6 +6,7 @@
   fmt.cli
   fmt.tty
   cmdliner
+  ca-certs
   mirage-crypto-rng.unix
   mfetch
   progress))

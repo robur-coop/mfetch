@@ -101,18 +101,19 @@ let rec unroll (q, rem) = function
 let is_redirection (resp : Httpcats.response) =
   H2.Status.is_redirection resp.Httpcats.status
 
-let request ~resolver ?(meth = `GET) ?(headers = []) ?body uri state =
+let request ~resolver ?authenticator ?(meth = `GET) ?(headers = []) ?body uri
+    state =
   let q = Flux.Bqueue.(create with_close_and_halt) 0x7ff in
   let push str = inhibit @@ fun () -> Flux.Bqueue.put q str in
   let fn _meta _req resp () = function
-    | Some str when is_redirection resp -> push str
+    | Some str when not (is_redirection resp) -> push str
     | _ -> () in
   let prm =
     Miou.async @@ fun () ->
     let@ () = fun () -> inhibit @@ fun () -> Flux.Bqueue.close q in
     let body = Option.map (fun str -> Httpcats.String str) body in
-    Httpcats.request ~resolver ~follow_redirect:true ~meth ~headers ?body ~fn
-      ~uri () in
+    Httpcats.request ~resolver ?authenticator ~follow_redirect:true ~meth
+      ~headers ?body ~fn ~uri () in
   let result = unroll (q, "") state in
   Flux.Bqueue.halt q ;
   let status = Miou.await prm in
@@ -124,11 +125,11 @@ let request ~resolver ?(meth = `GET) ?(headers = []) ?body uri state =
   | Ok _, Ok (Error err) -> error_msgf "%s: %a" uri Httpcats.pp_error err
   | Ok _, Error exn -> error_msgf "%s: %s" uri (Printexc.to_string exn)
 
-let fetch_through_http ~resolver uri ?branch q =
+let fetch_through_http ~resolver ?authenticator uri ?branch q =
   let headers = [ ("Git-Protocol", "version=2") ] in
   let* _capabilities =
     let ctx = Protocol.ctx () in
-    request ~resolver ~headers
+    request ~resolver ?authenticator ~headers
       (uri ^ "/info/refs?service=git-upload-pack")
       (Smart.advertisement ctx) in
   let headers =
@@ -142,7 +143,7 @@ let fetch_through_http ~resolver uri ?branch q =
     let buf = Buffer.create 0x7ff in
     let state = collect buf state in
     let body = Buffer.contents buf in
-    request ~resolver ~meth:`POST ~headers ~body uri state in
+    request ~resolver ?authenticator ~meth:`POST ~headers ~body uri state in
   let* refs = post (Smart.ls_refs (Protocol.ctx ())) in
   let* want, (kind : kind) = want refs branch in
   let* errored = post (Smart.fetch ~want q (Protocol.ctx ())) in
@@ -401,7 +402,8 @@ let checkout ~origin ~into (((head : Carton.Uid.t), (kind : kind)) as reference)
 
 type ssh = { user : string; host : string; port : int option; path : string }
 
-let clone ~resolver ~remote ?branch ?(reporter = ignore) ~origin into =
+let clone ~resolver ?authenticator ~remote ?branch ?(reporter = ignore) ~origin
+    into =
   let* () =
     if Sys.file_exists (Fpath.to_string into)
     then error_msgf "%a already exists" Fpath.pp into
@@ -422,7 +424,7 @@ let clone ~resolver ~remote ?branch ?(reporter = ignore) ~origin into =
     Option.iter Flux.Source.dispose leftover in
   let reference =
     match remote with
-    | `HTTP uri -> fetch_through_http ~resolver uri ?branch q
+    | `HTTP uri -> fetch_through_http ~resolver ?authenticator uri ?branch q
     | `SSH { user; host; port; path } ->
         fetch_through_ssh ~user ~host ?port ~path ?branch q
     | `Local dirpath -> fetch_local_git_repository dirpath ?branch q in

@@ -179,7 +179,8 @@ let unable_to_delete filepath =
   | Ok () -> false
   | Error _ -> true
 
-let process ~force ~resolver ~progress ~dst previous { target; edns; action } =
+let process ~force ~resolver ?authenticator ~progress ~dst previous
+    { target; edns; action } =
   let into = Fpath.(dst / target) in
   let exists = Sys.file_exists (Fpath.to_string into) in
   if exists && not force
@@ -203,13 +204,13 @@ let process ~force ~resolver ~progress ~dst previous { target; edns; action } =
       match action with
       | Download { uri; archive; checksum; version; source } ->
           let* () =
-            Mfetch.Archive.download ~resolver ~checksum ~reporter
+            Mfetch.Archive.download ~resolver ?authenticator ~checksum ~reporter
               (uri, archive, into) in
           Ok (Some source, version, `Archive, None)
       | Clone { remote; branch; origin } ->
           let* head =
-            Mfetch.Git.clone ~resolver ~remote ?branch ~reporter ~origin into
-          in
+            Mfetch.Git.clone ~resolver ?authenticator ~remote ?branch ~reporter
+              ~origin into in
           Ok (Some origin, None, `Git, Some head)
       | Copy { dirpath = src } ->
           let* () = Mfetch.Archive.copy ~reporter ~src into in
@@ -253,6 +254,12 @@ let run_fetch quiet root filepath target with_dune_file force jobs no_progress
     config =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
   Mirage_crypto_rng_unix.use_default () ;
+  let authenticator =
+    match Ca_certs.authenticator () with
+    | Ok authenticator -> Some authenticator
+    | Error (`Msg msg) ->
+        Logs.warn (fun m -> m "Unable to load the system's CA store: %s" msg) ;
+        None in
   Miou_unix.run @@ fun () ->
   let result =
     let* edns = Mfetch.Edn.from_filepath filepath in
@@ -277,7 +284,8 @@ let run_fetch quiet root filepath target with_dune_file force jobs no_progress
         | None -> List.rev acc
         | Some job ->
             let v =
-              process ~force ~resolver ~progress ~dst:target previous job in
+              process ~force ~resolver ?authenticator ~progress ~dst:target
+                previous job in
             go ((job.target, v) :: acc) in
       go [] in
     let results : (string * (outcome, [> Mfetch.Git.error ]) result) list =
