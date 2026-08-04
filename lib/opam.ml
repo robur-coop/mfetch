@@ -149,6 +149,9 @@ let to_checksum str =
   let ( let* ) = Option.bind in
   let str = String.lowercase_ascii str in
   match String.split_on_char '=' str with
+  | [ "sha512"; v ] ->
+      let* hash = Digestif.of_hex_opt Digestif.SHA512 v in
+      Some (Hash (Digestif.SHA512, hash))
   | [ "sha256"; v ] ->
       let* hash = Digestif.of_hex_opt Digestif.SHA256 v in
       Some (Hash (Digestif.SHA256, hash))
@@ -156,6 +159,15 @@ let to_checksum str =
       let* hash = Digestif.of_hex_opt Digestif.MD5 v in
       Some (Hash (Digestif.MD5, hash))
   | _ -> None
+
+let string_of_hash (Hash (k, v)) =
+  let kind =
+    match k with
+    | Digestif.SHA512 -> "sha512"
+    | Digestif.SHA256 -> "sha256"
+    | Digestif.MD5 -> "md5"
+    | _ -> Fmt.invalid_arg "Unsupported checksum kind" in
+  Fmt.str "%s=%s" kind (Digestif.to_hex k v)
 
 let get_package_and_version str =
   let vs = String.split_on_char '.' str in
@@ -289,7 +301,7 @@ let resolve ~root ?version name =
   | Some version ->
   match resolve_from_repo ~root ~version name with
   | Ok url -> Ok url
-  | Error err -> (
+  | Error err -> begin
       Log.debug (fun m ->
           m
             "%s.%s not resolved from the default repository (%a), trying the \
@@ -298,4 +310,5 @@ let resolve ~root ?version name =
       match resolve_from_switch ~root ~version name with
       | Ok url -> Ok url
       | Error `Not_found -> error_msgf "Package %s.%s not found" name version
-      | Error _ as err -> err)
+      | Error _ as err -> err
+    end
