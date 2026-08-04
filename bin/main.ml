@@ -66,7 +66,27 @@ let process ~force ~resolver ?authenticator ~progress ~dst previous
     Ok (Fetched entry)
   end
 
-let update_dune_file ~target:_ = assert false
+let update_dune_file ~target =
+  let stanza = Fmt.str "(vendored_dirs %s)" target in
+  let dune = Fpath.v "dune" in
+  match Bos.OS.File.exists dune with
+  | Ok false -> Bos.OS.File.writef dune "%s\n%!" stanza
+  | Ok true ->
+      let* contents = Bos.OS.File.read dune in
+      let has_stanza =
+        let affix = "vendored_dirs" in
+        let rec go idx =
+          idx + String.length affix <= String.length contents
+          && (String.sub contents idx (String.length affix) = affix
+             || go (idx + 1)) in
+        go 0 in
+      if has_stanza
+      then begin
+        Log.info (fun m -> m "The dune file already has a vendored_dirs stanza") ;
+        Ok ()
+      end
+      else Bos.OS.File.writef dune "%s\n%s\n" contents stanza
+  | Error _ as err -> err
 
 let pp_status ppf = function
   | `Ok -> Fmt.(styled `Green string) ppf "ok"
