@@ -67,7 +67,7 @@ let process ~force ~resolver ?authenticator ~progress ~dst previous
   end
 
 let update_dune_file ~target =
-  let stanza = Fmt.str "(vendored_dirs %s)" target in
+  let stanza = Fmt.str "(vendored_dirs %a)" Fpath.pp target in
   let dune = Fpath.v "dune" in
   match Bos.OS.File.exists dune with
   | Ok false -> Bos.OS.File.writef dune "%s\n%!" stanza
@@ -82,7 +82,8 @@ let update_dune_file ~target =
         go 0 in
       if has_stanza
       then begin
-        Log.info (fun m -> m "The dune file already has a vendored_dirs stanza") ;
+        Logs.info (fun m ->
+            m "The dune file already has a vendored_dirs stanza") ;
         Ok ()
       end
       else Bos.OS.File.writef dune "%s\n%s\n" contents stanza
