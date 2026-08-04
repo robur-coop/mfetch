@@ -61,6 +61,18 @@ let want refs = function
       | _ -> error_msgf "Branch or tag %S not found" branch
     end
 
+let want_peeled refs branch =
+  let* uid, kind = want refs branch in
+  match kind with
+  | `Tag tag -> begin
+      let name = "refs/tags/" ^ tag in
+      match List.assoc_opt name refs.Smart.peeled with
+      | Some oid when is_hex oid ->
+          Ok (Carton.Uid.unsafe_of_string (Ohex.decode oid), kind)
+      | _ -> Ok (uid, kind)
+    end
+  | `Branch _ | `Detached -> Ok (uid, kind)
+
 (* through ssh or git-upload-pack *)
 let rec through (ic, oc) = function
   | Protocol.Error err -> Result.Error err
@@ -125,31 +137,47 @@ let request ~resolver ?authenticator ?(meth = `GET) ?(headers = []) ?body uri
   | Ok _, Ok (Error err) -> error_msgf "%s: %a" uri Httpcats.pp_error err
   | Ok _, Error exn -> error_msgf "%s: %s" uri (Printexc.to_string exn)
 
-let fetch_through_http ~resolver ?authenticator uri ?branch q =
+let advertise_through_http ~resolver ?authenticator uri =
   let headers = [ ("Git-Protocol", "version=2") ] in
+  let ctx = Protocol.ctx () in
   let* _capabilities =
-    let ctx = Protocol.ctx () in
     request ~resolver ?authenticator ~headers
       (uri ^ "/info/refs?service=git-upload-pack")
       (Smart.advertisement ctx) in
+  Ok ()
+
+let post_through_http ~resolver ?authenticator uri state =
   let headers =
     [
       ("Content-Type", "application/x-git-upload-pack-request");
       ("Accept", "application/x-git-upload-pack-result");
       ("Git-Protocol", "version=2");
     ] in
-  let uri = uri ^ "/git-upload-pack" in
-  let post state =
-    let buf = Buffer.create 0x7ff in
-    let state = collect buf state in
-    let body = Buffer.contents buf in
-    request ~resolver ?authenticator ~meth:`POST ~headers ~body uri state in
-  let* refs = post (Smart.ls_refs (Protocol.ctx ())) in
+  let buf = Buffer.create 0x7ff in
+  let state = collect buf state in
+  let body = Buffer.contents buf in
+  request ~resolver ?authenticator ~meth:`POST ~headers ~body
+    (uri ^ "/git-upload-pack") state
+
+let fetch_through_http ~resolver ?authenticator uri ?branch q =
+  let* () = advertise_through_http ~resolver ?authenticator uri in
+  let* refs =
+    post_through_http ~resolver ?authenticator uri
+      (Smart.ls_refs (Protocol.ctx ())) in
   let* want, (kind : kind) = want refs branch in
-  let* errored = post (Smart.fetch ~want q (Protocol.ctx ())) in
+  let* errored =
+    post_through_http ~resolver ?authenticator uri
+      (Smart.fetch ~want q (Protocol.ctx ())) in
   if errored
   then error_msgf "%s: remote error during fetch" uri
   else Ok (want, kind)
+
+let ls_refs_through_http ~resolver ?authenticator uri ?branch () =
+  let* () = advertise_through_http ~resolver ?authenticator uri in
+  let* refs =
+    post_through_http ~resolver ?authenticator uri
+      (Smart.ls_refs (Protocol.ctx ())) in
+  want_peeled refs branch
 
 let fetch_with_process ~cmd ?branch q =
   let ctx = Protocol.ctx () in
@@ -172,19 +200,44 @@ let fetch_with_process ~cmd ?branch q =
   | Ok _, Unix.(WSIGNALED _ | WSTOPPED _) -> error_msgf "%s killed" cmd
   | Error err, _ -> Error err
 
-let fetch_through_ssh ~user ~host ?(port = 22) ~path ?branch q =
+let ls_refs_with_process ~cmd ?branch () =
+  let ctx = Protocol.ctx () in
+  let smart =
+    let ( let* ) = Protocol.bind in
+    let* _capabilities = Smart.advertisement ctx in
+    let* refs = Smart.ls_refs ctx in
+    match want_peeled refs branch with
+    | Error (`Msg msg) -> Protocol.error (`Msg msg)
+    | Ok v -> Protocol.return v in
+  let ic, oc = Unix.open_process cmd in
+  let result = through (ic, oc) smart in
+  let status = try Some (Unix.close_process (ic, oc)) with _exn -> None in
+  match result with
+  | Error _ as err -> err
+  | Ok v ->
+      (match status with
+      | Some (Unix.WEXITED 0) | None -> ()
+      | Some (Unix.WEXITED n) ->
+          Log.debug (fun m -> m "%s exited with %d" cmd n)
+      | Some Unix.(WSIGNALED _ | WSTOPPED _) ->
+          Log.debug (fun m -> m "%s killed" cmd)) ;
+      Ok v
+
+let ssh_cmd ~user ~host ?(port = 22) ~path () =
   let remote = Fmt.str "%s@%s" user host in
   let cmd = Fmt.str "git-upload-pack '%s'" path in
-  let cmd =
-    Fmt.str "GIT_PROTOCOL=version=2 ssh -o SendEnv=GIT_PROTOCOL -p %d %s %s"
-      port remote (Filename.quote cmd) in
-  fetch_with_process ~cmd ?branch q
+  Fmt.str "GIT_PROTOCOL=version=2 ssh -o SendEnv=GIT_PROTOCOL -p %d %s %s" port
+    remote (Filename.quote cmd)
+
+let local_cmd dirpath =
+  Fmt.str "GIT_PROTOCOL=version=2 git-upload-pack %s"
+    (Filename.quote (Fpath.to_string dirpath))
+
+let fetch_through_ssh ~user ~host ?port ~path ?branch q =
+  fetch_with_process ~cmd:(ssh_cmd ~user ~host ?port ~path ()) ?branch q
 
 let fetch_local_git_repository dirpath ?branch q =
-  let cmd =
-    Fmt.str "GIT_PROTOCOL=version=2 git-upload-pack %s"
-      (Filename.quote (Fpath.to_string dirpath)) in
-  fetch_with_process ~cmd ?branch q
+  fetch_with_process ~cmd:(local_cmd dirpath) ?branch q
 
 let digest =
   let open Digestif in
@@ -401,6 +454,13 @@ let checkout ~origin ~into (((head : Carton.Uid.t), (kind : kind)) as reference)
   Ok head
 
 type ssh = { user : string; host : string; port : int option; path : string }
+
+let ls_remote ~resolver ?authenticator ~remote ?branch () =
+  match remote with
+  | `HTTP uri -> ls_refs_through_http ~resolver ?authenticator uri ?branch ()
+  | `SSH { user; host; port; path } ->
+      ls_refs_with_process ~cmd:(ssh_cmd ~user ~host ?port ~path ()) ?branch ()
+  | `Local dirpath -> ls_refs_with_process ~cmd:(local_cmd dirpath) ?branch ()
 
 let clone ~resolver ?authenticator ~remote ?branch ?(reporter = ignore) ~origin
     into =
