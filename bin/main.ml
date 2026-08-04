@@ -1,6 +1,7 @@
 let ( let* ) = Result.bind
 let ( let@ ) finally fn = Fun.protect ~finally fn
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
+let msgf fmt = Fmt.kstr (fun msg -> `Msg msg) fmt
 
 open Mfetch.Resolve
 
@@ -92,19 +93,34 @@ let show_results results =
           err in
   List.iter fn results
 
-let run_fetch quiet root filepath target with_dune_file force jobs
+let items_of ~root ~filepath ~lock ~target =
+  match lock with
+  | None ->
+      let* root = root in
+      let* edns = Mfetch.Edn.from_filepath filepath in
+      Ok (coalesce ~root edns)
+  | Some lock ->
+      let* lock = Mfetch.Lock.load lock in
+      let target' = Fpath.(to_string (rem_empty_seg target)) in
+      if lock.Mfetch.Lock.target <> target'
+      then
+        Logs.warn (fun m ->
+            m "The lock file vendors into %S, fetching into %S instead"
+              lock.Mfetch.Lock.target target') ;
+      Mfetch.Lock.to_jobs lock
+
+let run_fetch quiet root filepath lock target with_dune_file force jobs
     no_progress (config, columns) authenticator =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
   Mirage_crypto_rng_unix.use_default () ;
   Miou_unix.run @@ fun () ->
   let result =
-    let* edns = Mfetch.Edn.from_filepath filepath in
+    let* items = items_of ~root ~filepath ~lock ~target in
     let daemon, happy_eyeballs = Happy_eyeballs_miou_unix.create () in
     let@ () = fun () -> Happy_eyeballs_miou_unix.kill daemon in
     let resolver = `Happy happy_eyeballs in
     let state = Fpath.(target / ".mfetch.state") in
     let* previous = Mfetch.State.load state in
-    let items = coalesce ~root edns in
     let progress =
       Prgrss.make ~config ~columns
         ((not no_progress) && (not quiet) && Unix.isatty Unix.stderr) in
@@ -165,6 +181,36 @@ let run_fetch quiet root filepath target with_dune_file force jobs
       Logs.err (fun m -> m "%s" msg) ;
       2
 
+let run_lock quiet root filepath target output authenticator =
+  Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
+  Mirage_crypto_rng_unix.use_default () ;
+  Miou_unix.run @@ fun () ->
+  let result =
+    let* root = root in
+    let* edns = Mfetch.Edn.from_filepath filepath in
+    let daemon, happy_eyeballs = Happy_eyeballs_miou_unix.create () in
+    let@ () = fun () -> Happy_eyeballs_miou_unix.kill daemon in
+    let resolver = `Happy happy_eyeballs in
+    let items = coalesce ~root edns in
+    let ls_remote ?branch remote =
+      Mfetch.Git.ls_remote ~resolver ?authenticator ~remote ?branch ()
+      |> Result.map fst
+      |> Result.map_error (msgf "%a" Mfetch.Git.pp_error) in
+    let target = Fpath.(to_string (rem_empty_seg target)) in
+    let* lock = Mfetch.Lock.of_jobs ~target ~ls_remote items in
+    let* () = Mfetch.Lock.save output lock in
+    if not quiet
+    then
+      Fmt.pr "%d sources locked into %a\n%!"
+        (List.length lock.Mfetch.Lock.entries)
+        Fpath.pp output ;
+    Ok 0 in
+  match result with
+  | Ok n -> n
+  | Error (`Msg msg) ->
+      Logs.err (fun m -> m "%s" msg) ;
+      2
+
 open Cmdliner
 open Mfetch_cli
 
@@ -174,6 +220,7 @@ let term =
   $ setup_logs
   $ setup_opam_root
   $ file
+  $ lock
   $ target
   $ with_dune_file
   $ force
@@ -186,10 +233,45 @@ let fetch =
   let doc = "Fetch and vendor the sources listed in the $(b,_mfetch) file." in
   Cmd.v (Cmd.info "fetch" ~doc) term
 
+let lock_term =
+  let open Term in
+  const run_lock
+  $ setup_logs
+  $ setup_opam_root
+  $ file
+  $ target
+  $ output
+  $ setup_authenticator
+
+let lock_cmd =
+  let doc = "Pin the sources listed in the $(b,_mfetch) file." in
+  let man =
+    [
+      `S Manpage.s_description;
+      `P
+        "$(b,mfetch lock) resolves every specification of the $(b,_mfetch) \
+         file against the opam root, exactly as $(b,mfetch fetch) does, and \
+         records the outcome: the URL of the archive together with its \
+         checksums, or the URL of the Git repository together with the commit \
+         its branch or tag points at right now.";
+      `P
+        "The resulting file is written in the opam file syntax, so that a tool \
+         which knows nothing about mfetch - $(b,orb), to check that a build is \
+         reproducible - can fetch the very same sources on its own. $(b,mfetch \
+         fetch --lock) reads it back and skips the resolution altogether.";
+      `P
+        "A specification which cannot be named by a URL a third party can \
+         fetch - a package pinned to a local directory or to a local Git \
+         repository, an archive given verbatim and therefore without a \
+         checksum - is reported as an error. All of them are reported, not \
+         only the first one.";
+    ] in
+  Cmd.v (Cmd.info "lock" ~doc ~man) lock_term
+
 let cmd =
   let doc = "A tool to fetch and vendor sources of OPAM packages." in
   let man = [] in
   let info = Cmd.info "mfetch" ~doc ~man in
-  Cmd.group ~default:term info [ fetch ]
+  Cmd.group ~default:term info [ fetch; lock_cmd ]
 
 let () = exit (Cmd.eval' cmd)

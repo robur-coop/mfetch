@@ -5,12 +5,13 @@ authors:      "Romain Calascibetta <romain.calascibetta@gmail.com>"
 homepage:     "https://git.robur.coop/robur/mfetch"
 bug-reports:  "https://git.robur.coop/robur/mfetch/issues"
 dev-repo:     "git+https://git.robur.coop/robur/mfetch.git"
-license:      "AGPL"
-
-build: ["dune" "build" "-p" name "-j" jobs]
-
+license:      "AGPL-3.0-or-later"
+synopsis:     "A tool to fetch dependencies of an OCaml project"
+build: [
+  [ "dune" "build" "-p" name "-j" jobs ]
+]
 depends: [
-  "ocaml"       {>= "4.07.0"}
+  "ocaml"       {>= "5.0"}
   "dune"        {>= "2.8.0"}
   "httpcats"
   "ca-certs"

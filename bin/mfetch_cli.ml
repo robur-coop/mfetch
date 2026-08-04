@@ -84,6 +84,20 @@ let file =
   let open Arg in
   value & opt fpath (Fpath.v "_mfetch") & info [ "f"; "file" ] ~doc ~docv:"FILE"
 
+let lock =
+  let doc =
+    "Fetch the sources recorded in $(i,FILE), as produced by $(b,mfetch lock), \
+     instead of resolving the $(b,_mfetch) file against the opam root." in
+  let open Arg in
+  value & opt (some fpath) None & info [ "lock" ] ~doc ~docv:"FILE"
+
+let output =
+  let doc = "The lock file to write." in
+  let open Arg in
+  value
+  & opt fpath (Fpath.v "_mfetch.locked")
+  & info [ "o"; "output" ] ~doc ~docv:"FILE"
+
 let target =
   let doc = "The directory into which sources are vendored." in
   let open Arg in
