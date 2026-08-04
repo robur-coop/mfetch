@@ -49,7 +49,8 @@ let setup_logs = Term.(const setup_logs $ utf_8 $ renderer $ verbosity)
 let existing_directory =
   let parser str =
     match Fpath.of_string str with
-    | Ok v when Sys.is_directory str -> Ok (Fpath.to_dir_path v)
+    | Ok v when Sys.file_exists str && Sys.is_directory str ->
+        Ok (Fpath.to_dir_path v)
     | Ok v ->
         error_msgf "%a does not exist or it's not a valid directory" Fpath.pp v
     | Error _ as err -> err in
@@ -75,22 +76,19 @@ let root =
   & opt (some existing_directory) None
   & info [ "root" ] ~doc ~docv:"ROOT" ~env
 
-let setup_opam_root =
-  let open Term in
-  const setup_opam_root $ home $ root |> term_result ~usage:false
+let setup_opam_root = Term.(const setup_opam_root $ home $ root)
+let fpath = Arg.conv (Fpath.of_string, Fpath.pp)
 
 let file =
   let doc = "The file listing the packages to vendor (bcfg format)." in
-  let file' = Arg.conv (Fpath.of_string, Fpath.pp) in
   let open Arg in
-  value & opt file' (Fpath.v "_mfetch") & info [ "f"; "file" ] ~doc ~docv:"FILE"
+  value & opt fpath (Fpath.v "_mfetch") & info [ "f"; "file" ] ~doc ~docv:"FILE"
 
 let target =
   let doc = "The directory into which sources are vendored." in
-  let directory = Arg.conv (Fpath.of_string, Fpath.pp) in
   let open Arg in
   value
-  & opt directory (Fpath.v "vendors/")
+  & opt fpath (Fpath.v "vendors/")
   & info [ "target" ] ~doc ~docv:"DIRECTORY"
 
 let with_dune_file =
@@ -124,3 +122,12 @@ let width =
   value & opt (some int) default & info [ "width" ] ~doc ~docv:"WIDTH"
 
 let setup_progress = Term.(const setup_progress $ width)
+
+let setup_authenticator () =
+  match Ca_certs.authenticator () with
+  | Ok authenticator -> Some authenticator
+  | Error (`Msg msg) ->
+      Logs.warn (fun m -> m "Unable to load the system's CA store: %s" msg) ;
+      None
+
+let setup_authenticator = Term.(const setup_authenticator $ const ())

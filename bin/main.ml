@@ -92,16 +92,10 @@ let show_results results =
           err in
   List.iter fn results
 
-let run_fetch quiet root filepath target with_dune_file force jobs no_progress
-    (config, columns) =
+let run_fetch quiet root filepath target with_dune_file force jobs
+    no_progress (config, columns) authenticator =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
   Mirage_crypto_rng_unix.use_default () ;
-  let authenticator =
-    match Ca_certs.authenticator () with
-    | Ok authenticator -> Some authenticator
-    | Error (`Msg msg) ->
-        Logs.warn (fun m -> m "Unable to load the system's CA store: %s" msg) ;
-        None in
   Miou_unix.run @@ fun () ->
   let result =
     let* edns = Mfetch.Edn.from_filepath filepath in
@@ -186,6 +180,7 @@ let term =
   $ jobs
   $ no_progress
   $ setup_progress
+  $ setup_authenticator
 
 let fetch =
   let doc = "Fetch and vendor the sources listed in the $(b,_mfetch) file." in
