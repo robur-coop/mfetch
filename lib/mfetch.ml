@@ -4,3 +4,4 @@ module Version = Version
 module Archive = Archive
 module Opam = Opam
 module State = State
+module Resolve = Resolve

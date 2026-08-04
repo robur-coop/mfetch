@@ -11,7 +11,8 @@
   git
   git_object
   git_index
-  opam)
+  opam
+  resolve)
  (libraries
   carton-miou.unix
   opam-file-format
