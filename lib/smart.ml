@@ -12,6 +12,8 @@ let pp_error ppf = function
 
 type refs = {
   refs : (string * string) list (* refname, oid (hex) *);
+  peeled : (string * string) list;
+      (* refname, oid (hex) of the object an annotated tag points at *)
   head : Carton.Uid.t; (* oid (hex) *)
   head_symref : string option (* refs/heads/main *);
 }
@@ -42,40 +44,43 @@ let ls_refs ctx =
   let* () = Protocol.encode_pkt ctx "object-format=sha1" in
   let* () = Protocol.encode_delim_pkt ctx in
   let* () = Protocol.encode_pkt ctx "symrefs" in
+  let* () = Protocol.encode_pkt ctx "peel" in
   (* NOTE(dinosaure): filter references. *)
   let* () = Protocol.encode_pkt ctx "ref-prefix HEAD" in
   let* () = Protocol.encode_pkt ctx "ref-prefix refs/heads/" in
   let* () = Protocol.encode_pkt ctx "ref-prefix refs/tags/" in
   let* () = Protocol.encode_flush_pkt ctx in
-  let symref_target attrs =
-    let prefix = "symref-target:" in
+  let attribute ~prefix attrs =
     let fn attr =
       if String.starts_with ~prefix attr
       then
         let off = String.length prefix
         and len = String.length attr - String.length prefix in
-        let attr = String.sub attr off len in
-        Some attr
+        Some (String.sub attr off len)
       else None in
     List.find_map fn attrs in
-  let rec go acc head_symref ctx =
+  let rec go acc peeled head_symref ctx =
     let* pkt = Protocol.decode_pkt ctx in
     match String.trim pkt with
-    | "" -> Protocol.return (List.rev acc, head_symref)
+    | "" -> Protocol.return (List.rev acc, List.rev peeled, head_symref)
     | line ->
         begin match String.split_on_char ' ' line with
         | oid :: name :: attrs ->
             let head_symref =
               if name = "HEAD"
               then
-                match symref_target attrs with
+                match attribute ~prefix:"symref-target:" attrs with
                 | Some _ as value -> value
                 | None -> head_symref
               else head_symref in
-            go ((name, oid) :: acc) head_symref ctx
+            let peeled =
+              match attribute ~prefix:"peeled:" attrs with
+              | Some oid -> (name, oid) :: peeled
+              | None -> peeled in
+            go ((name, oid) :: acc) peeled head_symref ctx
         | _ -> Protocol.error `Invalid_pkt_line
         end in
-  let* refs, head_symref = go [] None ctx in
+  let* refs, peeled, head_symref = go [] [] None ctx in
   let* head =
     match (List.assoc_opt "HEAD" refs, head_symref) with
     | Some head, _ when head <> "unborn" ->
@@ -91,7 +96,7 @@ let ls_refs ctx =
         | None -> Protocol.error `No_branch
         end
     | _ -> Protocol.error `No_branch in
-  Protocol.return { refs; head; head_symref }
+  Protocol.return { refs; peeled; head; head_symref }
 
 let fetch ~(want : Carton.Uid.t) q ctx =
   let* () = Protocol.encode_pkt ctx "command=fetch" in
