@@ -232,6 +232,54 @@ let run_lock quiet root filepath target output authenticator =
       Logs.err (fun m -> m "%s" msg) ;
       2
 
+let run_status quiet filepath target =
+  let state = Fpath.(target / ".mfetch.state") in
+  let result =
+    let* entries = Mfetch.State.load state in
+    let* edns =
+      if Sys.file_exists (Fpath.to_string filepath)
+      then Mfetch.Edn.from_filepath filepath
+      else Ok [] in
+    let report target status =
+      if not quiet then Fmt.pr "%-32s %a\n%!" target pp_status status in
+    let fn dirty entry =
+      let into = Fpath.(target / entry.Mfetch.State.target) in
+      if not (Sys.file_exists (Fpath.to_string into))
+      then begin
+        report entry.Mfetch.State.target `Missing ;
+        true
+      end
+      else
+        match Mfetch.State.hash_of_tree into with
+        | Ok hash when hash = entry.Mfetch.State.hash ->
+            report entry.Mfetch.State.target `Ok ;
+            dirty
+        | Ok _ ->
+            report entry.Mfetch.State.target `Modified ;
+            true
+        | Error (`Msg msg) ->
+            Logs.err (fun m -> m "%s: %s" entry.Mfetch.State.target msg) ;
+            true in
+    let dirty = List.fold_left fn false entries in
+    let fn dirty edn =
+      let target = Mfetch.Edn.name edn in
+      let covers entry =
+        entry.Mfetch.State.target = target
+        || List.mem edn entry.Mfetch.State.edns in
+      if List.exists covers entries
+      then dirty
+      else begin
+        report target `Not_fetched ;
+        true
+      end in
+    let dirty = List.fold_left fn dirty edns in
+    Ok (if dirty then 1 else 0) in
+  match result with
+  | Ok status -> status
+  | Error (`Msg msg) ->
+      Logs.err (fun m -> m "%s" msg) ;
+      2
+
 open Cmdliner
 open Mfetch_cli
 
@@ -289,10 +337,19 @@ let lock_cmd =
     ] in
   Cmd.v (Cmd.info "lock" ~doc ~man) lock_term
 
+let status_term =
+  let open Term in
+  const run_status $ setup_logs $ file $ target
+
+let status_cmd =
+  let doc = "Check whether the vendored sources were modified." in
+  let man = [] in
+  Cmd.v (Cmd.info "status" ~doc ~man) status_term
+
 let cmd =
   let doc = "A tool to fetch and vendor sources of OPAM packages." in
   let man = [] in
   let info = Cmd.info "mfetch" ~doc ~man in
-  Cmd.group ~default:term info [ fetch; lock_cmd ]
+  Cmd.group ~default:term info [ fetch; lock_cmd; status_cmd ]
 
 let () = exit (Cmd.eval' cmd)
