@@ -1,35 +1,3 @@
-module Prgrss = struct
-  type t = {
-    add : string -> (int -> unit) * (unit -> unit);
-    finally : unit -> unit;
-  }
-
-  let make ~config = function
-    | false -> { add = (fun _ -> (ignore, ignore)); finally = ignore }
-    | true ->
-        let display = Progress.Display.start ~config Progress.Multi.blank in
-        let previous = !Mfetch_cli.interject in
-        Mfetch_cli.interject :=
-          { Mfetch_cli.run = (fun fn -> Progress.interject_with fn) } ;
-        let add name =
-          let line =
-            let open Progress.Line in
-            constf " %-24s " name
-            ++ spinner ()
-            ++ const " "
-            ++ bytes
-            ++ const " "
-            ++ bytes_per_sec in
-          let reporter = Progress.Display.add_line display line in
-          let fn len = Progress.Reporter.report reporter len in
-          let finally () = Progress.Reporter.finalise reporter in
-          (fn, finally) in
-        let finally () =
-          Progress.Display.finalise display ;
-          Mfetch_cli.interject := previous in
-        { add; finally }
-end
-
 let ( let* ) = Result.bind
 let ( let@ ) finally fn = Fun.protect ~finally fn
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
@@ -198,14 +166,15 @@ let process ~force ~resolver ?authenticator ~progress ~dst previous
   else if exists && unable_to_delete into
   then error_msgf "Unable to delete the previous version"
   else begin
-    let reporter, finally = progress.Prgrss.add target in
+    let { Prgrss.report = reporter; total = on_total; finally } =
+      progress.Prgrss.add target in
     let@ () = finally in
     let* source, version, k, commit =
       match action with
       | Download { uri; archive; checksum; version; source } ->
           let* () =
             Mfetch.Archive.download ~resolver ?authenticator ~checksum ~reporter
-              (uri, archive, into) in
+              ~on_total (uri, archive, into) in
           Ok (Some source, version, `Archive, None)
       | Clone { remote; branch; origin } ->
           let* head =
@@ -251,7 +220,7 @@ let show_results results =
   List.iter fn results
 
 let run_fetch quiet root filepath target with_dune_file force jobs no_progress
-    config =
+    (config, columns) =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
   Mirage_crypto_rng_unix.use_default () ;
   let authenticator =
@@ -270,7 +239,7 @@ let run_fetch quiet root filepath target with_dune_file force jobs no_progress
     let* previous = Mfetch.State.load state in
     let items = coalesce ~root edns in
     let progress =
-      Prgrss.make ~config
+      Prgrss.make ~config ~columns
         ((not no_progress) && (not quiet) && Unix.isatty Unix.stderr) in
     let@ () = progress.Prgrss.finally in
     let rem =
@@ -299,6 +268,7 @@ let run_fetch quiet root filepath target with_dune_file force jobs no_progress
           let _, outcome = List.find (fun (t, _) -> t = job.target) results in
           (job.target, job.edns, outcome) in
     let results = List.map fn items in
+    progress.Prgrss.finally () ;
     if not quiet then show_results results ;
     let fn (_, _, outcome) =
       match outcome with

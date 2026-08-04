@@ -113,7 +113,9 @@ let no_progress =
   let doc = "Don't display progress bars." in
   Arg.(value & flag & info [ "no-progress" ] ~doc)
 
-let setup_progress max_width = Progress.Config.v ~max_width ()
+let setup_progress max_width =
+  let config = Progress.Config.v ~max_width () in
+  (config, Option.value ~default:80 max_width)
 
 let width =
   let doc = "Width of the terminal." in
