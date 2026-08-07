@@ -16,4 +16,17 @@ depends: [
   "httpcats"
   "ca-certs"
   "carton-miou"
+  "opam-file-format"
+  "ohex"
+  "tar"
+  "flux"
+  "fluxt"
+  "logs"
+  "bcfg"
+  "fmt"
+  "fpath"
+  "cmdliner"
+  "progress"
+  "mirage-crypto-rng" {>= "1.2.0"}
+  "alcotest" {with-test}
 ]
