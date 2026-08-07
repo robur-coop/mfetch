@@ -67,7 +67,8 @@ let process ~force ~resolver ?authenticator ~progress ~dst previous
   end
 
 let update_dune_file ~target =
-  let stanza = Fmt.str "(vendored_dirs %a)" Fpath.pp target in
+  let stanza =
+    Fmt.str "(vendored_dirs %a)" Fpath.pp (Fpath.rem_empty_seg target) in
   let dune = Fpath.v "dune" in
   match Bos.OS.File.exists dune with
   | Ok false -> Bos.OS.File.writef dune "%s\n%!" stanza
