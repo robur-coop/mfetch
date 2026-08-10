@@ -3,6 +3,7 @@
  (public_name mfetch)
  (libraries
   logs.cli
+  logs.threaded
   fmt.cli
   fmt.tty
   cmdliner

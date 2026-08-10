@@ -17,12 +17,12 @@ let edn00 =
   in
   Alcotest.(check edn)
     uri
-    (Edn.Archive { uri; archive = Tar_bz2 })
+    (Edn.Archive { uri; archive = Tar_bz2; checksum = [] })
     (Edn.of_string_exn uri) ;
   let uri = "https://perdu.org/foo-1.0.0.tar.gz" in
   Alcotest.(check edn)
     uri
-    (Edn.Archive { uri; archive = Tar_gz })
+    (Edn.Archive { uri; archive = Tar_gz; checksum = [] })
     (Edn.of_string_exn uri) ;
   let uri = "git+https://github.com/robur-coop/httpcats.git" in
   Alcotest.(check edn)

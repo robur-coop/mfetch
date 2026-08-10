@@ -135,6 +135,12 @@ let width =
   let open Arg in
   value & opt (some int) default & info [ "width" ] ~doc ~docv:"WIDTH"
 
+let domains =
+  let doc = "The number of domains allocated." in
+  let default = Int.max 0 (Int.min 4 (Stdlib.Domain.recommended_domain_count () - 1)) in
+  let open Arg in
+  value & opt int default & info [ "domains" ] ~doc ~docv:"DOMAINS"
+
 let setup_progress = Term.(const setup_progress $ width)
 
 let setup_authenticator () =

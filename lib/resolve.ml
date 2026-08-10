@@ -25,6 +25,20 @@ let origin_of_edn = function
   | Git_local { dirpath; _ } -> Fpath.to_string dirpath
   | edn -> Edn.to_string edn
 
+let verify_checksum ~expected checksum =
+  let fn0 : type a. a Digestif.hash -> Opam.hash -> a Digestif.t option =
+   fun hash (Opam.Hash (hash', value)) ->
+    match (hash, hash') with
+    | Digestif.SHA256, Digestif.SHA256 -> Some value
+    | Digestif.SHA512, Digestif.SHA512 -> Some value
+    | Digestif.MD5, Digestif.MD5 -> Some value
+    | _ -> None in
+  let fn1 (Opam.Hash (hash, value)) =
+    match List.find_map (fn0 hash) expected with
+    | None -> true
+    | Some value' -> Digestif.equal hash value value' in
+  List.for_all fn1 checksum
+
 let action_of_edn ~root edn =
   match edn with
   | Edn.Local { dirpath } -> Ok (Copy { dirpath })
@@ -36,8 +50,18 @@ let action_of_edn ~root edn =
       let source = uri.Opam.src in
       let* edn' = Edn.of_string source in
       match edn' with
-      | Edn.Archive { uri = href; archive } ->
+      | Edn.Archive { uri = href; archive; checksum = expected } ->
           let checksum = uri.Opam.checksum in
+          let* () =
+            if verify_checksum ~expected checksum
+            then Ok ()
+            else
+              error_msgf
+                "Checksums annonced by mfetch do not match what OPAM \
+                 advertises for %s%a"
+                name
+                Fmt.(option (any "." ++ string))
+                version in
           let version = Some uri.Opam.version in
           Ok (Download { uri = href; archive; checksum; version; source })
       | Git_http { uri = href; branch } ->
@@ -55,9 +79,8 @@ let action_of_edn ~root edn =
       | Local { dirpath } -> Ok (Copy { dirpath })
       | Opam _ -> error_msgf "Invalid source for %s: %s" name source
     end
-  | Archive { uri; archive } ->
-      Ok
-        (Download { uri; archive; checksum = []; version = None; source = uri })
+  | Archive { uri; archive; checksum } ->
+      Ok (Download { uri; archive; checksum; version = None; source = uri })
   | Git_http { uri; branch } ->
       let remote = `HTTP uri in
       let origin = origin_of_edn edn in
@@ -74,7 +97,8 @@ let action_of_edn ~root edn =
 let action_of_url ~checksum ~version url =
   let* edn = Edn.of_string url in
   match edn with
-  | Edn.Archive { uri; archive } ->
+  | Edn.Archive { uri; archive; checksum = _ } ->
+      (* [Edn.of_string url] never produces a checksum. *)
       Ok (Download { uri; archive; checksum; version; source = uri }, edn)
   | Git_http { uri; branch } ->
       let action =
