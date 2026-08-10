@@ -10,7 +10,7 @@ type archive = Tar_gz | Tar_bz2 | Tar | Zip
 
 type t =
   | Opam of { name : string; version : string option }
-  | Archive of { uri : string; archive : archive }
+  | Archive of { uri : string; archive : archive; checksum : Opam.hash list }
   | Git_http of { uri : string; branch : string option }
   | Git_ssh of {
       user : string;
@@ -150,7 +150,7 @@ let is_package str =
   | [] | [ _ ] -> is_valid_package_name str
   | str :: _ -> is_valid_package_name str
 
-let of_string str =
+let of_string ?(checksum = []) str =
   match cut ~sep:"://" str with
   | Some ("git+ssh", rem) -> decode_git_ssh_uri rem
   | Some ("git+file", str) ->
@@ -193,7 +193,7 @@ let of_string str =
         | "zip" :: _ -> Ok Zip
         | _ -> error_msgf "Impossible to recoginize the given archive: %S" str
       in
-      Ok (Archive { uri = str; archive })
+      Ok (Archive { uri = str; archive; checksum })
   | Some _ -> error_msgf "Unrecognized scheme on: %S" str
   | None when is_ssh str -> decode_ssh str
   | None when is_package str -> decode_package str
@@ -225,6 +225,13 @@ let to_string = function
 let pp = Fmt.of_to_string to_string
 let equal = ( = )
 
+let checksum_of_children =
+  let fn = function
+    | { Bcfg.name = hash; parameters = [ value ]; _ } ->
+        Opam.to_checksum (Fmt.str "%s=%s" hash value)
+    | _ -> None in
+  List.filter_map fn
+
 let from_filepath filepath =
   let parser ic () =
     let lexbuf = Lexing.from_channel ~with_positions:true ic in
@@ -232,8 +239,9 @@ let from_filepath filepath =
     | Error err ->
         error_msgf "%a: %a" Fpath.pp filepath Bcfg.pp_error_for_human err
     | Ok cfg ->
-        let fn acc { Bcfg.name; _ } =
-          match of_string name with
+        let fn acc { Bcfg.name; children; _ } =
+          let checksum = checksum_of_children children in
+          match of_string ~checksum name with
           | Ok edn -> Set.add (to_string edn) acc
           | Error _ ->
               Log.warn (fun m -> m "Ignore endpoint %S" name) ;
