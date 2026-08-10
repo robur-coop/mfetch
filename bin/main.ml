@@ -2,6 +2,7 @@ let ( let* ) = Result.bind
 let ( let@ ) finally fn = Fun.protect ~finally fn
 let error_msgf fmt = Fmt.kstr (fun msg -> Error (`Msg msg)) fmt
 let msgf fmt = Fmt.kstr (fun msg -> `Msg msg) fmt
+let () = Logs_threaded.enable ()
 
 open Mfetch.Resolve
 
