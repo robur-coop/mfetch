@@ -23,6 +23,8 @@ module Lock = struct
     mutable fd : Unix.file_descr option;
   }
 
+  exception Locked of Fpath.t
+
   let locks = Hashtbl.create 16
 
   let release_all_locks () =
@@ -35,7 +37,7 @@ module Lock = struct
     | `Lock_read -> if block then Unix.F_RLOCK else Unix.F_TRLOCK
     | `Lock_write -> if block then Unix.F_LOCK else Unix.F_TLOCK
 
-  let rec update want lock =
+  let rec update ?(block = true) want lock =
     if want <> lock.flag
     then
       match (want, lock) with
@@ -51,7 +53,7 @@ module Lock = struct
           Log.debug (fun m ->
               m "flock %a (%a => %a)" Fpath.pp filepath pp_lock `Lock_none
                 pp_lock want) ;
-          let lock' = flock want filepath in
+          let lock' = flock ~block want filepath in
           lock.flag <- want ;
           lock.fd <- lock'.fd
       | `Lock_write, { fd = Some fd; filepath; flag = `Lock_read } ->
@@ -59,7 +61,7 @@ module Lock = struct
               m "flock %a (%a => %a)" Fpath.pp filepath pp_lock `Lock_write
                 pp_lock `Lock_read) ;
           Unix.close fd ;
-          let lock' = flock want filepath in
+          let lock' = flock ~block want filepath in
           lock.flag <- `Lock_write ;
           lock.fd <- lock'.fd
       | (#lock_rdwr as want), { fd = Some fd; flag; filepath } ->
@@ -76,6 +78,7 @@ module Lock = struct
             | Unix.Unix_error (Unix.EAGAIN, _, _)
             | Unix.Unix_error (Unix.EACCES, _, _)
             ->
+              if not block then raise (Locked filepath) ;
               Log.info (fun m ->
                   m "Another process has locked %a, waiting (C-c to abort)..."
                     Fpath.pp filepath) ;
@@ -88,7 +91,7 @@ module Lock = struct
           lock.flag <- want
       | _ -> assert false
 
-  and flock flag filepath =
+  and flock ?(block = true) flag filepath =
     match flag with
     | `Lock_none -> { fd = None; filepath; flag = `Lock_none }
     | #lock_rdwr as flag ->
@@ -105,8 +108,19 @@ module Lock = struct
         Hashtbl.replace locks fd () ;
         let current = { fd = Some fd; filepath; flag = `Lock_none } in
         Log.debug (fun m -> m "=> %a" pp_lock flag) ;
-        update flag current ;
+        begin
+          try update ~block flag current
+          with exn ->
+            Hashtbl.remove locks fd ;
+            Unix.close fd ;
+            raise exn
+        end ;
         current
+
+  let try_flock flag filepath =
+    match flock ~block:false flag filepath with
+    | lock -> Some lock
+    | exception Locked _ -> None
 end
 
 type error = [ `Not_found | `Msg of string ]
@@ -224,18 +238,36 @@ let uri_from_opam filepath =
 
 let current_switch ~root =
   let filepath = Fpath.(root / "config.lock") in
-  let lock = Lock.flock `Lock_read filepath in
-  let@ () = fun () -> Lock.update `Lock_none lock in
+  let lock = Lock.try_flock `Lock_read filepath in
+  if Option.is_none lock
+  then
+    Log.debug (fun m ->
+        m "Another process has locked %a, reading %a anyway" Fpath.pp filepath
+          Fpath.pp Fpath.(root / "config")) ;
+  let@ () = fun () -> Option.iter (Lock.update `Lock_none) lock in
   match OpamParser.FullPos.file Fpath.(to_string (root / "config")) with
   | cfg -> get_current_switch cfg
   | exception _ -> Error `Not_found
 
+let switch_prefix ~root =
+  let of_string str =
+    match Fpath.of_string str with
+    | Ok path when Fpath.is_abs path -> Some (Fpath.to_dir_path path)
+    | Ok path -> Some Fpath.(root // to_dir_path path)
+    | Error (`Msg msg) ->
+        Log.warn (fun m -> m "Invalid switch %S: %s" str msg) ;
+        None in
+  match Option.bind (Sys.getenv_opt "OPAM_SWITCH_PREFIX") of_string with
+  | Some prefix -> Ok prefix
+  | None ->
+      let* switch = current_switch ~root in
+      Option.to_result ~none:`Not_found (of_string switch)
+
 (* [<root>/<switch>/.opam-switch/packages/] contains one directory
    [<name>.<version>] per installed package. *)
 let resolve_from_switch ~root ?version name =
-  let* switch = current_switch ~root in
-  Log.debug (fun m -> m "switch: %s" switch) ;
-  let packages = Fpath.(root / switch / ".opam-switch" / "packages") in
+  let* switch = switch_prefix ~root in
+  let packages = Fpath.(switch / ".opam-switch" / "packages") in
   let* dir =
     match version with
     | Some version ->
@@ -252,8 +284,8 @@ let resolve_from_switch ~root ?version name =
         | [] -> Error `Not_found
         | dir :: _ as dirs ->
             Log.warn (fun m ->
-                m "%d versions of %s installed in the switch %s"
-                  (List.length dirs) name switch) ;
+                m "%d versions of %s installed in the switch %a"
+                  (List.length dirs) name Fpath.pp switch) ;
             Ok dir
       end in
   uri_from_opam Fpath.(dir / "opam")
