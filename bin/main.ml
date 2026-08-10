@@ -133,10 +133,10 @@ let items_of ~root ~filepath ~lock ~target =
       Mfetch.Lock.to_jobs lock
 
 let run_fetch quiet root filepath lock target with_dune_file force jobs
-    no_progress (config, columns) authenticator =
+    no_progress (config, columns) domains authenticator =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
   Mirage_crypto_rng_unix.use_default () ;
-  Miou_unix.run @@ fun () ->
+  Miou_unix.run ~domains @@ fun () ->
   let result =
     let* items = items_of ~root ~filepath ~lock ~target in
     let daemon, happy_eyeballs = Happy_eyeballs_miou_unix.create () in
@@ -204,10 +204,10 @@ let run_fetch quiet root filepath lock target with_dune_file force jobs
       Logs.err (fun m -> m "%s" msg) ;
       2
 
-let run_lock quiet root filepath target output authenticator =
+let run_lock quiet root filepath target output domains authenticator =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
   Mirage_crypto_rng_unix.use_default () ;
-  Miou_unix.run @@ fun () ->
+  Miou_unix.run ~domains @@ fun () ->
   let result =
     let* root = root in
     let* edns = Mfetch.Edn.from_filepath filepath in
@@ -298,6 +298,7 @@ let term =
   $ jobs
   $ no_progress
   $ setup_progress
+  $ domains
   $ setup_authenticator
 
 let fetch =
@@ -312,6 +313,7 @@ let lock_term =
   $ file
   $ target
   $ output
+  $ domains
   $ setup_authenticator
 
 let lock_cmd =
