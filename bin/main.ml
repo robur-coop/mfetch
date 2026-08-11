@@ -23,7 +23,7 @@ let unable_to_delete filepath =
   | Error _ -> true
 
 let process ~force ~resolver ?authenticator ~progress ~dst previous
-    { target; edns; action } =
+    { target; edns; action; name } =
   let into = Fpath.(dst / target) in
   let exists = Sys.file_exists (Fpath.to_string into) in
   if exists && not force
@@ -42,7 +42,7 @@ let process ~force ~resolver ?authenticator ~progress ~dst previous
   then error_msgf "Unable to delete the previous version"
   else begin
     let { Prgrss.report = reporter; total = on_total; finally } =
-      progress.Prgrss.add target in
+      progress.Prgrss.add (Option.value ~default:target name) in
     let@ () = finally in
     let* source, version, k, commit =
       match action with
@@ -169,7 +169,7 @@ let run_fetch quiet root filepath lock target with_dune_file force jobs
          | Ok results -> results
          | Error exn -> raise exn in
     let fn = function
-      | Unresolved { target; msg } -> (target, [], Error (`Msg msg))
+      | Unresolved { target; msg; _ } -> (target, [], Error (`Msg msg))
       | Job job ->
           let _, outcome = List.find (fun (t, _) -> t = job.target) results in
           (job.target, job.edns, outcome) in

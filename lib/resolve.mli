@@ -13,8 +13,16 @@ type action =
     }
   | Copy of { dirpath : Fpath.t }
 
-type job = { target : string; edns : Edn.t list; action : action }
-type entry = Job of job | Unresolved of { target : string; msg : string }
+type job = {
+  target : string;
+  edns : Edn.t list;
+  action : action;
+  name : string option;
+}
+
+type entry =
+  | Job of job
+  | Unresolved of { target : string; msg : string; name : string option }
 
 val action_of_edn : root:Fpath.t -> Edn.t -> (action, [ `Msg of string ]) result
 
