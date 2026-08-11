@@ -10,17 +10,27 @@ type archive = Tar_gz | Tar_bz2 | Tar | Zip
 
 type t =
   | Opam of { name : string; version : string option }
-  | Archive of { uri : string; archive : archive; checksum : Opam.hash list }
-  | Git_http of { uri : string; branch : string option }
+  | Archive of {
+      uri : string;
+      archive : archive;
+      checksum : Opam.hash list;
+      name : string option;
+    }
+  | Git_http of { uri : string; branch : string option; name : string option }
   | Git_ssh of {
       user : string;
       host : string;
       port : int option;
       path : string;
       branch : string option;
+      name : string option;
     }
-  | Git_local of { dirpath : Fpath.t; branch : string option }
-  | Local of { dirpath : Fpath.t }
+  | Git_local of {
+      dirpath : Fpath.t;
+      branch : string option;
+      name : string option;
+    }
+  | Local of { dirpath : Fpath.t; name : string option }
 
 (* ugly! *)
 external reraise : exn -> 'a = "%reraise"
@@ -52,6 +62,11 @@ let path_of_uri uri =
 
 let name = function
   | Opam { name; _ } -> name
+  | Archive { name = Some name; _ }
+  | Git_http { name = Some name; _ }
+  | Git_ssh { name = Some name; _ }
+  | Local { name = Some name; _ } ->
+      name
   | Archive { uri; _ } ->
       chop_archive_extension (Filename.basename (path_of_uri uri))
   | Git_http { uri; _ } ->
@@ -59,10 +74,10 @@ let name = function
       Filename.remove_extension (Filename.basename path)
   | Git_ssh { path; _ } -> Filename.remove_extension (Filename.basename path)
   | Git_local { dirpath; _ } -> Fpath.(basename (rem_ext dirpath))
-  | Local { dirpath } -> Fpath.basename dirpath
+  | Local { dirpath; _ } -> Fpath.basename dirpath
 
 (* git+ssh://user@host(:port)?/path(#branch)? *)
-let decode_git_ssh_uri str =
+let decode_git_ssh_uri ?name str =
   let uri, branch =
     match List.rev (String.split_on_char '#' str) with
     | [] | [ _ ] -> (str, None)
@@ -86,7 +101,7 @@ let decode_git_ssh_uri str =
                 let none = msgf "Invalid port: %S" port' in
                 let* port = Option.to_result ~none port in
                 Ok (host, Some port) in
-          Ok (Git_ssh { user; host; port; path; branch })
+          Ok (Git_ssh { user; host; port; path; branch; name })
     end
 
 let cut ~sep str =
@@ -112,7 +127,7 @@ let cut ~sep str =
   scan 0
 
 (* user@host:path(#branch)? *)
-let decode_ssh str =
+let decode_ssh ?name str =
   let str, branch =
     match List.rev (String.split_on_char '#' str) with
     | [] -> (str, None)
@@ -128,7 +143,7 @@ let decode_ssh str =
         | host :: path ->
             let path = String.concat ":" path in
             Ok (host, path) in
-      Ok (Git_ssh { user; host; port = None; path; branch })
+      Ok (Git_ssh { user; host; port = None; path; branch; name })
 
 let decode_package str =
   match String.split_on_char '.' str with
@@ -150,9 +165,9 @@ let is_package str =
   | [] | [ _ ] -> is_valid_package_name str
   | str :: _ -> is_valid_package_name str
 
-let of_string ?(checksum = []) str =
+let of_string ?name ?(checksum = []) str =
   match cut ~sep:"://" str with
-  | Some ("git+ssh", rem) -> decode_git_ssh_uri rem
+  | Some ("git+ssh", rem) -> decode_git_ssh_uri ?name rem
   | Some ("git+file", str) ->
       let* dirpath, branch =
         match List.rev (String.split_on_char '#' str) with
@@ -163,7 +178,7 @@ let of_string ?(checksum = []) str =
             let dirpath = String.concat "#" (List.rev rem) in
             let* dirpath = Fpath.of_string dirpath in
             Ok (Fpath.to_dir_path dirpath, Some branch) in
-      Ok (Git_local { dirpath; branch })
+      Ok (Git_local { dirpath; branch; name })
   | Some ("git+http", str) ->
       let uri, branch =
         match List.rev (String.split_on_char '#' str) with
@@ -171,7 +186,7 @@ let of_string ?(checksum = []) str =
         | branch :: rem ->
             let uri = "http://" ^ String.concat "#" (List.rev rem) in
             (uri, Some branch) in
-      Ok (Git_http { uri; branch })
+      Ok (Git_http { uri; branch; name })
   | Some ("git+https", str) ->
       let uri, branch =
         match List.rev (String.split_on_char '#' str) with
@@ -179,11 +194,11 @@ let of_string ?(checksum = []) str =
         | branch :: rem ->
             let uri = "https://" ^ String.concat "#" (List.rev rem) in
             (uri, Some branch) in
-      Ok (Git_http { uri; branch })
+      Ok (Git_http { uri; branch; name })
   | Some ("file", rem) ->
       let* dirpath = Fpath.of_string rem in
       let dirpath = Fpath.to_dir_path dirpath in
-      Ok (Local { dirpath })
+      Ok (Local { dirpath; name })
   | Some (("http" | "https"), _rem) ->
       let* archive =
         match List.rev (String.split_on_char '.' str) with
@@ -193,9 +208,9 @@ let of_string ?(checksum = []) str =
         | "zip" :: _ -> Ok Zip
         | _ -> error_msgf "Impossible to recoginize the given archive: %S" str
       in
-      Ok (Archive { uri = str; archive; checksum })
+      Ok (Archive { uri = str; archive; checksum; name })
   | Some _ -> error_msgf "Unrecognized scheme on: %S" str
-  | None when is_ssh str -> decode_ssh str
+  | None when is_ssh str -> decode_ssh ?name str
   | None when is_package str -> decode_package str
   | None -> error_msgf "Invalid endpoint: %S" str
 
@@ -210,16 +225,16 @@ let pp_branch ppf = function
 
 let to_string = function
   | Archive { uri; _ } -> uri
-  | Git_http { uri; branch } -> Fmt.str "git+%s%a" uri pp_branch branch
-  | Local { dirpath } -> Fmt.str "file://%a" Fpath.pp dirpath
-  | Git_local { dirpath; branch } ->
+  | Git_http { uri; branch; _ } -> Fmt.str "git+%s%a" uri pp_branch branch
+  | Local { dirpath; _ } -> Fmt.str "file://%a" Fpath.pp dirpath
+  | Git_local { dirpath; branch; _ } ->
       Fmt.str "git+file://%a%s%a" Fpath.pp (Fpath.parent dirpath)
         (Fpath.basename dirpath) pp_branch branch
   | Opam { name; version = Some version } -> Fmt.str "%s.%s" name version
   | Opam { name; _ } -> name
-  | Git_ssh { user; host; port = None; path; branch } ->
+  | Git_ssh { user; host; port = None; path; branch; _ } ->
       Fmt.str "%s@%s:%s%a" user host path pp_branch branch
-  | Git_ssh { user; host; port = Some port; path; branch } ->
+  | Git_ssh { user; host; port = Some port; path; branch; _ } ->
       Fmt.str "git+ssh://%s@%s:%d/%s%a" user host port path pp_branch branch
 
 let pp = Fmt.of_to_string to_string
@@ -233,6 +248,8 @@ let checksum_of_children =
     | _ -> None in
   List.filter_map fn
 
+let name_of_parameters = function [ "as"; name ] -> Some name | _ -> None
+
 let from_filepath filepath =
   let parser ic () =
     let lexbuf = Lexing.from_channel ~with_positions:true ic in
@@ -240,12 +257,13 @@ let from_filepath filepath =
     | Error err ->
         error_msgf "%a: %a" Fpath.pp filepath Bcfg.pp_error_for_human err
     | Ok cfg ->
-        let fn acc { Bcfg.name; children; _ } =
+        let fn acc { Bcfg.name = edn; parameters; children } =
           let checksum = checksum_of_children children in
-          match of_string ~checksum name with
+          let name = name_of_parameters parameters in
+          match of_string ?name ~checksum edn with
           | Ok edn -> Map.add (to_string edn) edn acc
           | Error _ ->
-              Log.warn (fun m -> m "Ignore endpoint %S" name) ;
+              Log.warn (fun m -> m "Ignore endpoint %S" edn) ;
               acc in
         let edns = List.fold_left fn Map.empty cfg in
         let edns = Map.bindings edns in

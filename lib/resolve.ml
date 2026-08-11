@@ -41,8 +41,8 @@ let verify_checksum ~expected checksum =
 
 let action_of_edn ~root edn =
   match edn with
-  | Edn.Local { dirpath } -> Ok (Copy { dirpath })
-  | Opam { name : string; version : string option } -> begin
+  | Edn.Local { dirpath; _ } -> Ok (Copy { dirpath })
+  | Opam { name; version } -> begin
       let* uri =
         match Opam.resolve ~root ?version name with
         | Ok _ as v -> v
@@ -50,7 +50,7 @@ let action_of_edn ~root edn =
       let source = uri.Opam.src in
       let* edn' = Edn.of_string source in
       match edn' with
-      | Edn.Archive { uri = href; archive; checksum = expected } ->
+      | Edn.Archive { uri = href; archive; checksum = expected; _ } ->
           let checksum = uri.Opam.checksum in
           let* () =
             if verify_checksum ~expected checksum
@@ -64,32 +64,32 @@ let action_of_edn ~root edn =
                 version in
           let version = Some uri.Opam.version in
           Ok (Download { uri = href; archive; checksum; version; source })
-      | Git_http { uri = href; branch } ->
+      | Git_http { uri = href; branch; name = _ } ->
           let remote = `HTTP href in
           let origin = origin_of_edn edn' in
           Ok (Clone { remote; branch; origin })
-      | Git_ssh { user; host; port; path; branch } ->
+      | Git_ssh { user; host; port; path; branch; name = _ } ->
           let remote = `SSH { Git.user; host; port; path } in
           let origin = origin_of_edn edn' in
           Ok (Clone { remote; branch; origin })
-      | Git_local { dirpath; branch } ->
+      | Git_local { dirpath; branch; name = _ } ->
           let remote = `Local dirpath in
           let origin = origin_of_edn edn' in
           Ok (Clone { remote; branch; origin })
-      | Local { dirpath } -> Ok (Copy { dirpath })
+      | Local { dirpath; name = _ } -> Ok (Copy { dirpath })
       | Opam _ -> error_msgf "Invalid source for %s: %s" name source
     end
-  | Archive { uri; archive; checksum } ->
+  | Archive { uri; archive; checksum; name = _ } ->
       Ok (Download { uri; archive; checksum; version = None; source = uri })
-  | Git_http { uri; branch } ->
+  | Git_http { uri; branch; name = _ } ->
       let remote = `HTTP uri in
       let origin = origin_of_edn edn in
       Ok (Clone { remote; branch; origin })
-  | Git_ssh { user; host; port; path; branch } ->
+  | Git_ssh { user; host; port; path; branch; name = _ } ->
       let remote = `SSH { Git.user; host; port; path } in
       let origin = origin_of_edn edn in
       Ok (Clone { remote; branch; origin })
-  | Git_local { dirpath; branch } ->
+  | Git_local { dirpath; branch; name = _ } ->
       let remote = `Local dirpath in
       let origin = origin_of_edn edn in
       Ok (Clone { remote; branch; origin })
@@ -97,14 +97,15 @@ let action_of_edn ~root edn =
 let action_of_url ~checksum ~version url =
   let* edn = Edn.of_string url in
   match edn with
-  | Edn.Archive { uri; archive; checksum = _ } ->
+  | Edn.Archive { uri; archive; _ } ->
       (* [Edn.of_string url] never produces a checksum. *)
-      Ok (Download { uri; archive; checksum; version; source = uri }, edn)
-  | Git_http { uri; branch } ->
+      let source = uri in
+      Ok (Download { uri; archive; checksum; version; source }, edn)
+  | Git_http { uri; branch; _ } ->
       let action =
         Clone { remote = `HTTP uri; branch; origin = origin_of_edn edn } in
       Ok (action, edn)
-  | Git_ssh { user; host; port; path; branch } ->
+  | Git_ssh { user; host; port; path; branch; _ } ->
       let remote = `SSH { Git.user; host; port; path } in
       Ok (Clone { remote; branch; origin = origin_of_edn edn }, edn)
   | Git_local _ | Local _ | Opam _ ->
@@ -123,8 +124,16 @@ let key_of_action = function
       in
       Fmt.str "git:%s#%a" remote Fmt.(option string) branch
 
-type job = { target : string; edns : Edn.t list; action : action }
-type entry = Job of job | Unresolved of { target : string; msg : string }
+type job = {
+  target : string;
+  edns : Edn.t list;
+  action : action;
+  name : string option;
+}
+
+type entry =
+  | Job of job
+  | Unresolved of { target : string; msg : string; name : string option }
 
 let coalesce ~root edns =
   let tbl = Hashtbl.create 0x7ff in
@@ -142,14 +151,14 @@ let coalesce ~root edns =
             items
         | None ->
             let target = Edn.name edn in
-            let value = { target; edns = [ edn ]; action } in
+            let value = { target; edns = [ edn ]; action; name = None } in
             Hashtbl.add tbl key value ;
             `Key key :: items
       end in
   let items = List.rev (List.fold_left fn [] edns) in
   let fn = function
     | `Key key -> Job (Hashtbl.find tbl key)
-    | `Unresolved (target, msg) -> Unresolved { target; msg } in
+    | `Unresolved (target, msg) -> Unresolved { target; msg; name = None } in
   let items = List.map fn items in
   let module M = Map.Make (String) in
   let count =
@@ -160,11 +169,11 @@ let coalesce ~root edns =
       | Unresolved _ -> acc in
     List.fold_left fn M.empty items in
   let fn = function
-    | Job ({ target; _ } as job) when M.find target count > 1 ->
+    | Job ({ target; name; _ } as job) when M.find target count > 1 ->
         let msg =
           Fmt.str "several distinct sources for the same target (%a)"
             Fmt.(list ~sep:(any ", ") Edn.pp)
             job.edns in
-        Unresolved { target; msg }
+        Unresolved { target; msg; name }
     | item -> item in
   List.map fn items

@@ -17,24 +17,32 @@ let edn00 =
   in
   Alcotest.(check edn)
     uri
-    (Edn.Archive { uri; archive = Tar_bz2; checksum = [] })
+    (Edn.Archive { uri; archive = Tar_bz2; checksum = []; name = None })
     (Edn.of_string_exn uri) ;
   let uri = "https://perdu.org/foo-1.0.0.tar.gz" in
   Alcotest.(check edn)
     uri
-    (Edn.Archive { uri; archive = Tar_gz; checksum = [] })
+    (Edn.Archive { uri; archive = Tar_gz; checksum = []; name = None })
     (Edn.of_string_exn uri) ;
   let uri = "git+https://github.com/robur-coop/httpcats.git" in
   Alcotest.(check edn)
     uri
     (Edn.Git_http
-       { uri = "https://github.com/robur-coop/httpcats.git"; branch = None })
+       {
+         uri = "https://github.com/robur-coop/httpcats.git";
+         branch = None;
+         name = None;
+       })
     (Edn.of_string_exn uri) ;
   let uri = "git+https://github.com/robur-coop/bcfg.git#unic" in
   Alcotest.(check edn)
     uri
     (Edn.Git_http
-       { uri = "https://github.com/robur-coop/bcfg.git"; branch = Some "unic" })
+       {
+         uri = "https://github.com/robur-coop/bcfg.git";
+         branch = Some "unic";
+         name = None;
+       })
     (Edn.of_string_exn uri) ;
   let str = "git@github.com:dinosaure/blaze.git" in
   Alcotest.(check edn)
@@ -46,6 +54,7 @@ let edn00 =
          port = None;
          path = "dinosaure/blaze.git";
          branch = None;
+         name = None;
        })
     (Edn.of_string_exn str) ;
   let str = "git@github.com:robur-coop/unic.git#v0.1.0" in
@@ -58,6 +67,7 @@ let edn00 =
          port = None;
          path = "robur-coop/unic.git";
          branch = Some "v0.1.0";
+         name = None;
        })
     (Edn.of_string_exn str) ;
   let uri = "git+ssh://git@git.robur.coop:2222/foo/bar.git" in
@@ -70,18 +80,23 @@ let edn00 =
          port = Some 2222;
          path = "foo/bar.git";
          branch = None;
+         name = None;
        })
     (Edn.of_string_exn uri) ;
   let uri = "file:///home/foo/dev/bcfg" in
   Alcotest.(check edn)
     uri
-    (Edn.Local { dirpath = Fpath.v "/home/foo/dev/bcfg/" })
+    (Edn.Local { dirpath = Fpath.v "/home/foo/dev/bcfg/"; name = None })
     (Edn.of_string_exn uri) ;
   let uri = "git+file:///home/foo/dev/blaze#main" in
   Alcotest.(check edn)
     uri
     (Edn.Git_local
-       { dirpath = Fpath.v "/home/foo/dev/blaze/"; branch = Some "main" })
+       {
+         dirpath = Fpath.v "/home/foo/dev/blaze/";
+         branch = Some "main";
+         name = None;
+       })
     (Edn.of_string_exn uri)
 
 let tests = [ edn00 ]

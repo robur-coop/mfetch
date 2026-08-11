@@ -170,11 +170,12 @@ let to_jobs { entries; _ } =
     | Error (`Msg msg) -> error_msgf "%s: %s" target msg
     | Ok (action, edn) ->
         let edns = if edns = [] then [ edn ] else edns in
-        Ok (Resolve.Job { Resolve.target; edns; action } :: acc) in
+        let name = None in
+        Ok (Resolve.Job { Resolve.target; edns; action; name } :: acc) in
   let* jobs = List.fold_left fn (Ok []) entries in
   Ok (List.rev jobs)
 
-let entry_of_job ~ls_remote { Resolve.target; edns; action } =
+let entry_of_job ~ls_remote { Resolve.target; edns; action; _ } =
   match action with
   | Resolve.Download { uri; checksum = []; _ } ->
       error_msgf
@@ -223,8 +224,9 @@ let entry_of_job ~ls_remote { Resolve.target; edns; action } =
 
 let of_jobs ~target ~ls_remote items =
   let fn (entries, errors) = function
-    | Resolve.Unresolved { target; msg } ->
-        (entries, Fmt.str "%s: %s" target msg :: errors)
+    | Resolve.Unresolved { target; msg; name } ->
+        let name = Option.value ~default:target name in
+        (entries, Fmt.str "%s: %s" name msg :: errors)
     | Job job ->
     match entry_of_job ~ls_remote job with
     | Ok entry -> (entry :: entries, errors)
