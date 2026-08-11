@@ -47,6 +47,13 @@ let process ~force ~resolver ?authenticator ~progress ~dst previous
     let* source, version, k, commit =
       match action with
       | Download { uri; archive; checksum; version; source } ->
+          if checksum = []
+          then
+            Logs.warn (fun m ->
+                m
+                  "%s does not have, at least, one checksum. We won't check \
+                   what we're trying to download!"
+                  (Option.value ~default:target name)) ;
           let* () =
             Mfetch.Archive.download ~resolver ?authenticator ~checksum ~reporter
               ~on_total (uri, archive, into) in
