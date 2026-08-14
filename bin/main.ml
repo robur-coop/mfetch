@@ -51,8 +51,8 @@ let process ~force ~resolver ?authenticator ~progress ~dst previous
           then
             Logs.warn (fun m ->
                 m
-                  "%s does not have, at least, one checksum. We won't check \
-                   what we're trying to download!"
+                  "%s does not have any checksum. We won't validate the \
+                   integrity of what we're downloading!"
                   (Option.value ~default:target name)) ;
           let* () =
             Mfetch.Archive.download ~resolver ?authenticator ~checksum ~reporter
