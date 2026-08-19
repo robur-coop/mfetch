@@ -170,11 +170,18 @@ let run_fetch quiet root filepath lock target with_dune_file force jobs
                 previous job in
             go ((job.target, v) :: acc) in
       go [] in
-    let results : (string * (outcome, [> Mfetch.Git.error ]) result) list =
-      Miou.parallel worker (List.init (Int.max 1 jobs) (Fun.const ()))
-      |> List.concat_map @@ function
-         | Ok results -> results
-         | Error exn -> raise exn in
+    let results =
+      let prm0 = Miou.async worker in
+      let domains = Miou.Domain.available () in
+      if domains > 0
+      then
+        Miou.await prm0
+        :: Miou.parallel worker (List.init (Int.max 1 jobs) (Fun.const ()))
+      else [ Miou.await prm0 ] in
+    let results =
+      (Fun.flip List.concat_map) results @@ function
+      | Ok results -> results
+      | Error exn -> raise exn in
     let fn = function
       | Unresolved { target; msg; _ } -> (target, [], Error (`Msg msg))
       | Job job ->
