@@ -1,4 +1,4 @@
-let tests = [ ("Endpoint", Test_edn.tests) ]
+let tests = [ ("Endpoint", Test_edn.tests); ("Name", Test_name.tests) ]
 
 let () =
   Printexc.record_backtrace true ;
