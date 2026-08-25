@@ -39,6 +39,7 @@ let want refs = function
       let oid = Ohex.decode oid in
       let oid = Carton.Uid.unsafe_of_string oid in
       Ok (oid, `Detached)
+  | Some "HEAD" -> Ok (refs.Smart.head, `Detached)
   | Some branch -> begin
       let candidates =
         if String.starts_with ~prefix:"refs/heads/" branch
