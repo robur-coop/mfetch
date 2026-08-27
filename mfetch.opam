@@ -4,7 +4,7 @@ maintainer:   "Romain Calascibetta <romain.calascibetta@gmail.com>"
 authors:      "Romain Calascibetta <romain.calascibetta@gmail.com>"
 homepage:     "https://git.robur.coop/robur/mfetch"
 bug-reports:  "https://git.robur.coop/robur/mfetch/issues"
-dev-repo:     "git+https://git.robur.coop/robur/mfetch.git"
+dev-repo:     "git+https://github.com/robur-coop/mfetch.git"
 license:      "AGPL-3.0-or-later"
 synopsis:     "A tool to fetch dependencies of an OCaml project"
 build: [
