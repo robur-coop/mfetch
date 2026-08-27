@@ -11,16 +11,16 @@ build: [
   [ "dune" "build" "-p" name "-j" jobs ]
 ]
 depends: [
-  "ocaml"       {>= "5.4"}
-  "dune"        {>= "2.8.0"}
-  "httpcats"
+  "ocaml"             {>= "5.4"}
+  "dune"              {>= "2.8.0"}
+  "httpcats"          {>= "0.3.1"}
   "ca-certs"
   "carton-miou"
-  "opam-file-format"
+  "opam-file-format"  {>= "2.2.0"}
   "ohex"
   "tar"
   "flux"
-  "fluxt"
+  "fluxt"             {>= "0.0.1~beta7"}
   "logs"
   "bcfg"
   "fmt"
