@@ -141,11 +141,9 @@ let request ~resolver ?authenticator ?(meth = `GET) ?(headers = []) ?body uri
 let advertise_through_http ~resolver ?authenticator uri =
   let headers = [ ("Git-Protocol", "version=2") ] in
   let ctx = Protocol.ctx () in
-  let* _capabilities =
-    request ~resolver ?authenticator ~headers
-      (uri ^ "/info/refs?service=git-upload-pack")
-      (Smart.advertisement ctx) in
-  Ok ()
+  request ~resolver ?authenticator ~headers
+    (uri ^ "/info/refs?service=git-upload-pack")
+    (Smart.advertisement ctx)
 
 let post_through_http ~resolver ?authenticator uri state =
   let headers =
@@ -161,35 +159,57 @@ let post_through_http ~resolver ?authenticator uri state =
     (uri ^ "/git-upload-pack") state
 
 let fetch_through_http ~resolver ?authenticator uri ?branch q =
-  let* () = advertise_through_http ~resolver ?authenticator uri in
-  let* refs =
-    post_through_http ~resolver ?authenticator uri
-      (Smart.ls_refs (Protocol.ctx ())) in
-  let* want, (kind : kind) = want refs branch in
-  let* errored =
-    post_through_http ~resolver ?authenticator uri
-      (Smart.fetch ~want q (Protocol.ctx ())) in
+  let* advertisement = advertise_through_http ~resolver ?authenticator uri in
+  let* want, (kind : kind), errored =
+    match advertisement with
+    | Smart.V1 { refs; capabilities } ->
+        let* want, kind = want refs branch in
+        let* errored =
+          post_through_http ~resolver ?authenticator uri
+            (Smart.fetch_v1 ~capabilities ~want q (Protocol.ctx ())) in
+        Ok (want, kind, errored)
+    | Smart.V2 _ ->
+        let* refs =
+          post_through_http ~resolver ?authenticator uri
+            (Smart.ls_refs (Protocol.ctx ())) in
+        let* want, kind = want refs branch in
+        let* errored =
+          post_through_http ~resolver ?authenticator uri
+            (Smart.fetch_v2 ~want q (Protocol.ctx ())) in
+        Ok (want, kind, errored) in
   if errored
   then error_msgf "%s: remote error during fetch" uri
   else Ok (want, kind)
 
 let ls_refs_through_http ~resolver ?authenticator uri ?branch () =
-  let* () = advertise_through_http ~resolver ?authenticator uri in
-  let* refs =
-    post_through_http ~resolver ?authenticator uri
-      (Smart.ls_refs (Protocol.ctx ())) in
-  want_peeled refs branch
+  let* advertisement = advertise_through_http ~resolver ?authenticator uri in
+  match advertisement with
+  | Smart.V1 { refs; _ } -> want_peeled refs branch
+  | Smart.V2 _ ->
+      let* refs =
+        post_through_http ~resolver ?authenticator uri
+          (Smart.ls_refs (Protocol.ctx ())) in
+      want_peeled refs branch
 
 let fetch_with_process ~cmd ?branch q =
   let ctx = Protocol.ctx () in
   let smart =
     let ( let* ) = Protocol.bind in
-    let* _capabilities = Smart.advertisement ctx in
-    let* refs = Smart.ls_refs ctx in
+    let* advertisement = Smart.advertisement ctx in
+    let* refs, capabilities =
+      match advertisement with
+      | Smart.V1 { refs; capabilities } ->
+          Protocol.return (refs, Some capabilities)
+      | Smart.V2 _ ->
+          let* refs = Smart.ls_refs ctx in
+          Protocol.return (refs, None) in
     match want refs branch with
     | Error (`Msg msg) -> Protocol.error (`Msg msg)
     | Ok (want, kind) ->
-        let* errored = Smart.fetch ~want q ctx in
+        let* errored =
+          match capabilities with
+          | Some capabilities -> Smart.fetch_v1 ~capabilities ~want q ctx
+          | None -> Smart.fetch_v2 ~want q ctx in
         Protocol.return ((want, kind), errored) in
   let ic, oc = Unix.open_process cmd in
   let result = through (ic, oc) smart in
@@ -205,8 +225,11 @@ let ls_refs_with_process ~cmd ?branch () =
   let ctx = Protocol.ctx () in
   let smart =
     let ( let* ) = Protocol.bind in
-    let* _capabilities = Smart.advertisement ctx in
-    let* refs = Smart.ls_refs ctx in
+    let* advertisement = Smart.advertisement ctx in
+    let* refs =
+      match advertisement with
+      | Smart.V1 { refs; _ } -> Protocol.return refs
+      | Smart.V2 _ -> Smart.ls_refs ctx in
     match want_peeled refs branch with
     | Error (`Msg msg) -> Protocol.error (`Msg msg)
     | Ok v -> Protocol.return v in
