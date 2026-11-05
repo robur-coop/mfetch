@@ -141,8 +141,15 @@ let promote ~tmp ~into =
       Unix.rmdir (Fpath.to_string tmp)
   | _ -> Unix.rename (Fpath.to_string tmp) (Fpath.to_string into)
 
-let download ~resolver ?authenticator ?(checksums = []) ?(reporter = ignore)
-    ?(on_total = ignore) (uri, kind, into) =
+(* the semantics should be:
+   - lookup in local cache
+   -- if not found (or bad), then:
+    - retrieve from mirror
+    -- if this errored
+     - retrieve from original
+*)
+let download ~resolver ?authenticator ~checksums ?(reporter = ignore)
+    ?(on_total = ignore) mirror (uri, kind, into) =
   let* () =
     if Sys.file_exists (Fpath.to_string into)
     then error_msgf "%a already exists" Fpath.pp into
@@ -152,58 +159,135 @@ let download ~resolver ?authenticator ?(checksums = []) ?(reporter = ignore)
   let tmp = Fpath.(dirpath / Fmt.str ".mfetch.%s.tmp" (basename into)) in
   let* _ = Bos.OS.Dir.delete ~recurse:true tmp in
   let* _ = Bos.OS.Dir.create ~path:true tmp in
-  let q = Flux.Bqueue.(create with_close_and_halt) 0x7ff in
-  let push str = inhibit @@ fun () -> Flux.Bqueue.put q str in
-  let on_total = once on_total in
-  let feeders =
-    List.map (fun (Opam.Hash (k, e)) -> Digest.of_hash k e) checksums in
-  let fn _meta _req (resp : Httpcats.response) () = function
-    | Some str when not (is_redirection resp) ->
-        let hdrs = resp.Httpcats.headers in
-        let content_length = Httpcats.Headers.get hdrs "content-length" in
-        let total = Option.bind content_length int_of_string_opt in
-        on_total total ;
-        List.iter (fun { Digest.feed; _ } -> feed str) feeders ;
-        reporter (String.length str) ;
-        push str
-    | _ -> () in
-  let prm =
-    Miou.async @@ fun () ->
-    let@ () = fun () -> inhibit @@ fun () -> Flux.Bqueue.close q in
-    Httpcats.request ~resolver ?authenticator ~follow_redirect:true ~fn ~uri ()
-  in
-  let from = Flux.Source.bqueue ~stop:`Halt q in
-  let result =
-    try
-      unarchive kind tmp from ;
-      Ok ()
-    with
-    | Failure msg -> Error (`Msg msg)
-    | exn -> error_msgf "%s" (Printexc.to_string exn) in
-  Flux.Source.dispose from ;
-  let result =
-    Result.iter_error (fun _ -> Miou.cancel prm) result ;
-    let* () = result in
-    let* () =
-      match Miou.await prm with
-      | Ok (Ok _resp) -> Ok ()
-      | Ok (Error err) -> error_msgf "%s: %a" uri Httpcats.pp_error err
-      | Error exn -> error_msgf "%s: %s" uri (Printexc.to_string exn) in
-    let fn acc { Digest.get; _ } =
-      match acc with
-      | Ok () when get () -> Ok ()
-      | _ -> error_msgf "Invalid checksum for %s" uri in
-    let* () = List.fold_left fn (Ok ()) feeders in
-    match promote ~tmp ~into with
-    | () -> Ok ()
-    | exception exn ->
-        error_msgf "Unable to promote %a: %s" Fpath.pp into
-          (Printexc.to_string exn) in
-  match result with
-  | Ok _ as value -> value
-  | Error err ->
-      let _ = Bos.OS.Dir.delete ~recurse:true tmp in
-      Error err
+  let files, mirror_uris =
+    List.fold_left
+      (fun (files, urls) cs ->
+        let r =
+          match cs with
+          | Opam.Hash (alg, v) ->
+              let hex = Digestif.to_hex alg v in
+              let* alg =
+                match Digestif.hash_to_hash' alg with
+                | `SHA256 -> Ok "sha256"
+                | `SHA512 -> Ok "sha512"
+                | _ -> Error (`Msg "no opam-supported hash") in
+              let* home = Bos.OS.Dir.user () in
+              let prefix = String.sub hex 0 2 in
+              Ok
+                ( Fpath.(home / ".opam" / "download-cache" / alg / prefix / hex),
+                  Printf.sprintf "%s/cache/%s/%s/%s" mirror alg prefix hex )
+        in
+        match r with
+        | Ok (file, url) -> (file :: files, url :: urls)
+        | Error _ -> (files, urls))
+      ([], []) checksums in
+  let file =
+    List.fold_left
+      (fun r file ->
+        let q = Flux.Bqueue.(create with_close_and_halt) 0x7ff in
+        match r with
+        | Ok _ as o -> o
+        | Error () -> (
+            let res =
+              let feeders =
+                List.map
+                  (fun (Opam.Hash (k, e)) -> Digest.of_hash k e)
+                  checksums in
+              let* str = Bos.OS.File.read file in
+              List.iter (fun { Digest.feed; _ } -> feed str) feeders ;
+              let fn acc { Digest.get; _ } =
+                match acc with
+                | Ok () when get () -> Ok ()
+                | _ -> error_msgf "Invalid checksum for %s" uri in
+              let* () = List.fold_left fn (Ok ()) feeders in
+              Ok (inhibit @@ fun () -> Flux.Bqueue.put q str) in
+            match res with Ok () -> Ok q | Error _ -> Error ()))
+      (Error ()) files in
+  match file with
+  | Ok q -> begin
+      let from = Flux.Source.bqueue ~stop:`Halt q in
+      let result =
+        try
+          unarchive kind tmp from ;
+          Ok ()
+        with
+        | Failure msg -> Error (`Msg msg)
+        | exn -> error_msgf "%s" (Printexc.to_string exn) in
+      Flux.Source.dispose from ;
+      let result =
+        let* () = result in
+        match promote ~tmp ~into with
+        | () -> Ok ()
+        | exception exn ->
+            error_msgf "Unable to promote %a: %s" Fpath.pp into
+              (Printexc.to_string exn) in
+      match result with
+      | Ok _ as value -> value
+      | Error err ->
+          let _ = Bos.OS.Dir.delete ~recurse:true tmp in
+          Error err
+    end
+  | Error () -> (
+      let download_and_check uri =
+        let q = Flux.Bqueue.(create with_close_and_halt) 0x7ff in
+        let push str = inhibit @@ fun () -> Flux.Bqueue.put q str in
+        let on_total = once on_total in
+        let feeders =
+          List.map (fun (Opam.Hash (k, e)) -> Digest.of_hash k e) checksums
+        in
+        let fn _meta _req (resp : Httpcats.response) () = function
+          | Some str when not (is_redirection resp) ->
+              let hdrs = resp.Httpcats.headers in
+              let content_length = Httpcats.Headers.get hdrs "content-length" in
+              let total = Option.bind content_length int_of_string_opt in
+              on_total total ;
+              List.iter (fun { Digest.feed; _ } -> feed str) feeders ;
+              reporter (String.length str) ;
+              push str
+          | _ -> () in
+        let prm =
+          Miou.async @@ fun () ->
+          let@ () = fun () -> inhibit @@ fun () -> Flux.Bqueue.close q in
+          Httpcats.request ~resolver ?authenticator ~follow_redirect:true ~fn
+            ~uri () in
+        let fn acc { Digest.get; _ } =
+          match acc with
+          | Ok () when get () -> Ok ()
+          | _ -> error_msgf "Invalid checksum for %s" uri in
+        let* () = List.fold_left fn (Ok ()) feeders in
+        let from = Flux.Source.bqueue ~stop:`Halt q in
+        let result =
+          try
+            unarchive kind tmp from ;
+            Ok ()
+          with
+          | Failure msg -> Error (`Msg msg)
+          | exn -> error_msgf "%s" (Printexc.to_string exn) in
+        Flux.Source.dispose from ;
+        Result.iter_error (fun _ -> Miou.cancel prm) result ;
+        let* () = result in
+        match Miou.await prm with
+        | Ok (Ok _resp) -> Ok ()
+        | Ok (Error err) -> error_msgf "%s: %a" uri Httpcats.pp_error err
+        | Error exn -> error_msgf "%s: %s" uri (Printexc.to_string exn) in
+      let result =
+        List.fold_left
+          (fun r uri ->
+            match r with Error _ -> download_and_check uri | Ok () -> Ok ())
+          (Error (`Msg "not started"))
+          (mirror_uris @ [ uri ]) in
+      let result =
+        let* () = result in
+        match promote ~tmp ~into with
+        | () -> Ok ()
+        | exception exn ->
+            error_msgf "Unable to promote %a: %s" Fpath.pp into
+              (Printexc.to_string exn) in
+      match result with
+      | Ok _ as value -> value
+      | Error err ->
+          let _ = Bos.OS.Dir.delete ~recurse:true tmp in
+          Error err)
 
 let excluded = [ ".git"; ".hg"; "_darcs"; "_build"; "_opam"; ".mfetch.state" ]
 

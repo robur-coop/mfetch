@@ -22,7 +22,7 @@ let unable_to_delete filepath =
   | Ok () -> false
   | Error _ -> true
 
-let process ~force ~resolver ?authenticator ~progress ~dst previous
+let process ~force ~resolver ?authenticator ~progress ~dst previous mirror
     { target; edns; action; name } =
   let into = Fpath.(dst / target) in
   let exists = Sys.file_exists (Fpath.to_string into) in
@@ -56,7 +56,7 @@ let process ~force ~resolver ?authenticator ~progress ~dst previous
                   (Option.value ~default:target name)) ;
           let* () =
             Mfetch.Archive.download ~resolver ?authenticator ~checksums
-              ~reporter ~on_total (uri, archive, into) in
+              ~reporter ~on_total mirror (uri, archive, into) in
           Ok (Some source, version, `Archive, None)
       | Clone { remote; branch; origin } ->
           let* head =
@@ -140,7 +140,7 @@ let items_of ~root ~filepath ~lock ~target =
       Mfetch.Lock.to_jobs lock
 
 let run_fetch quiet root filepath lock target with_dune_file force jobs
-    no_progress (config, columns) domains authenticator =
+    no_progress (config, columns) domains authenticator mirror =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
   Mirage_crypto_rng_unix.use_default () ;
   Miou_unix.run ~domains @@ fun () ->
@@ -167,7 +167,7 @@ let run_fetch quiet root filepath lock target with_dune_file force jobs
         | Some job ->
             let v =
               process ~force ~resolver ?authenticator ~progress ~dst:target
-                previous job in
+                previous mirror job in
             go ((job.target, v) :: acc) in
       go [] in
     let results =
@@ -314,6 +314,7 @@ let term =
   $ setup_progress
   $ domains
   $ setup_authenticator
+  $ mirror
 
 let fetch =
   let doc = "Fetch and vendor the sources listed in the $(b,_mfetch) file." in
