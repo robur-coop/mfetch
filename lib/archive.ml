@@ -205,6 +205,7 @@ let download ~resolver ?authenticator ~checksums ?(reporter = ignore)
       (Error ()) files in
   match file with
   | Ok q -> begin
+      let () = inhibit @@ fun () -> Flux.Bqueue.close q in
       let from = Flux.Source.bqueue ~stop:`Halt q in
       let result =
         try
