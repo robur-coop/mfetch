@@ -182,13 +182,20 @@ let fetch_v2 ~(want : Carton.Uid.t) q ctx =
   let* () = Protocol.encode_pkt ctx "want %s" (Ohex.encode (want :> string)) in
   let* () = Protocol.encode_pkt ctx "done" in
   let* () = Protocol.encode_flush_pkt ctx in
-  let* () =
+  let rec skip_section ctx =
+    let* pkt = Protocol.decode_pkt ctx in
+    if String.length pkt = 0 then Protocol.return () else skip_section ctx in
+  let rec sections ctx =
     let* pkt = Protocol.decode_pkt ctx in
     match String.trim pkt with
     | "packfile" -> Protocol.return ()
+    | "acknowledgments" | "shallow-info" | "wanted-refs" | "packfile-uris" ->
+        let* () = skip_section ctx in
+        sections ctx
     | pkt ->
         Log.err (fun m -> m "Unexpected section: %S" pkt) ;
         Protocol.error `Invalid_pkt_line in
+  let* () = sections ctx in
   side_band false q ctx
 
 let capabilities_v1 capabilities =
