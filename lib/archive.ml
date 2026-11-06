@@ -207,8 +207,25 @@ let download ~resolver ?authenticator ?(checksum = []) ?(reporter = ignore)
 
 let excluded = [ ".git"; ".hg"; "_darcs"; "_build"; "_opam"; ".mfetch.state" ]
 
-let rec copy_tree ~reporter ~src ~dst =
+(* NOTE(dinosaure): about [current], it's a special case to avoid to recursively
+   copy our archive. It exists a case (the [mnet] test) where we would like to
+   copy something which is into our parent directory. Our test is in our
+   [~/mnet/unikernels] directory and we would like to fetch [~/mnet]. In that
+   situation, we MUST skip the top [dst] ([~/mnet/unikernels/vendors]) to avoid
+   a cyclic copy.
+
+   We also assume that [dst] is, at least, one subdirectory further than [src]
+   (which is the case even on the tightest situation like [~/mnet] and
+   [~/mnet/vendors]) *)
+
+let rec copy_tree ?current ~reporter src dst =
   mkdir_p dst ;
+  let current =
+    match current with
+    | None ->
+        let stat = Unix.stat (Fpath.to_string (Fpath.parent dst)) in
+        (stat.Unix.st_dev, stat.Unix.st_ino)
+    | Some value -> value in
   let entries = Sys.readdir (Fpath.to_string src) in
   Array.sort String.compare entries ;
   let fn entry =
@@ -217,7 +234,8 @@ let rec copy_tree ~reporter ~src ~dst =
       let src = Fpath.(src / entry) and dst = Fpath.(dst / entry) in
       let stat = Unix.lstat (Fpath.to_string src) in
       match stat.Unix.st_kind with
-      | Unix.S_DIR -> copy_tree ~reporter ~src ~dst
+      | Unix.S_DIR when (stat.Unix.st_dev, stat.Unix.st_ino) = current -> ()
+      | Unix.S_DIR -> copy_tree ~current ~reporter src dst
       | Unix.S_LNK ->
           Unix.symlink
             (Unix.readlink (Fpath.to_string src))
@@ -260,7 +278,7 @@ let copy ?(reporter = ignore) ~src into =
   let* _ = Bos.OS.Dir.create ~path:true dirpath in
   let tmp = Fpath.(dirpath / Fmt.str ".mfetch.%s.tmp" (basename into)) in
   let* _ = Bos.OS.Dir.delete ~recurse:true tmp in
-  match copy_tree ~reporter ~src ~dst:tmp with
+  match copy_tree ~reporter src tmp with
   | () ->
       begin try
         Unix.rename (Fpath.to_string tmp) (Fpath.to_string into) ;
