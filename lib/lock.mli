@@ -25,7 +25,7 @@ type entry = {
   target : string;  (** Sub-directory of the target directory. *)
   url : string;
       (** An opam URL: the URL of an archive, or [git+<uri>#<commit>]. *)
-  checksum : Opam.hash list;  (** Empty for Git sources. *)
+  checksums : Opam.hash list;  (** Empty for Git sources. *)
   version : string option;  (** The opam version, when it comes from one. *)
   edns : Edn.t list;  (** Provenance, possibly empty. *)
 }

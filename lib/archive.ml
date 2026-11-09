@@ -141,7 +141,7 @@ let promote ~tmp ~into =
       Unix.rmdir (Fpath.to_string tmp)
   | _ -> Unix.rename (Fpath.to_string tmp) (Fpath.to_string into)
 
-let download ~resolver ?authenticator ?(checksum = []) ?(reporter = ignore)
+let download ~resolver ?authenticator ?(checksums = []) ?(reporter = ignore)
     ?(on_total = ignore) (uri, kind, into) =
   let* () =
     if Sys.file_exists (Fpath.to_string into)
@@ -156,7 +156,7 @@ let download ~resolver ?authenticator ?(checksum = []) ?(reporter = ignore)
   let push str = inhibit @@ fun () -> Flux.Bqueue.put q str in
   let on_total = once on_total in
   let feeders =
-    List.map (fun (Opam.Hash (k, e)) -> Digest.of_hash k e) checksum in
+    List.map (fun (Opam.Hash (k, e)) -> Digest.of_hash k e) checksums in
   let fn _meta _req (resp : Httpcats.response) () = function
     | Some str when not (is_redirection resp) ->
         let hdrs = resp.Httpcats.headers in

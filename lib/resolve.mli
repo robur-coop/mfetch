@@ -2,7 +2,7 @@ type action =
   | Download of {
       uri : string;
       archive : Edn.archive;
-      checksum : Opam.hash list;
+      checksums : Opam.hash list;
       version : string option;
       source : string;
     }
@@ -27,7 +27,7 @@ type entry =
 val action_of_edn : root:Fpath.t -> Edn.t -> (action, [ `Msg of string ]) result
 
 val action_of_url :
-  checksum:Opam.hash list ->
+  checksums:Opam.hash list ->
   version:string option ->
   string ->
   (action * Edn.t, [ `Msg of string ]) result

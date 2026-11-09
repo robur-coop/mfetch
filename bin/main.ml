@@ -46,8 +46,8 @@ let process ~force ~resolver ?authenticator ~progress ~dst previous
     let@ () = finally in
     let* source, version, k, commit =
       match action with
-      | Download { uri; archive; checksum; version; source } ->
-          if checksum = []
+      | Download { uri; archive; checksums; version; source } ->
+          if checksums = []
           then
             Logs.warn (fun m ->
                 m
@@ -55,8 +55,8 @@ let process ~force ~resolver ?authenticator ~progress ~dst previous
                    integrity of what we're downloading!"
                   (Option.value ~default:target name)) ;
           let* () =
-            Mfetch.Archive.download ~resolver ?authenticator ~checksum ~reporter
-              ~on_total (uri, archive, into) in
+            Mfetch.Archive.download ~resolver ?authenticator ~checksums
+              ~reporter ~on_total (uri, archive, into) in
           Ok (Some source, version, `Archive, None)
       | Clone { remote; branch; origin } ->
           let* head =

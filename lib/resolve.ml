@@ -5,7 +5,7 @@ type action =
   | Download of {
       uri : string;
       archive : Edn.archive;
-      checksum : Opam.hash list;
+      checksums : Opam.hash list;
       version : string option;
       source : string;
     }
@@ -25,7 +25,7 @@ let origin_of_edn = function
   | Git_local { dirpath; _ } -> Fpath.to_string dirpath
   | edn -> Edn.to_string edn
 
-let verify_checksum ~expected checksum =
+let verify_checksum ~expected checksums =
   let fn0 : type a. a Digestif.hash -> Opam.hash -> a Digestif.t option =
    fun hash (Opam.Hash (hash', value)) ->
     match (hash, hash') with
@@ -37,7 +37,7 @@ let verify_checksum ~expected checksum =
     match List.find_map (fn0 hash) expected with
     | None -> true
     | Some value' -> Digestif.equal hash value value' in
-  List.for_all fn1 checksum
+  List.for_all fn1 checksums
 
 let action_of_edn ~root edn =
   match edn with
@@ -50,10 +50,10 @@ let action_of_edn ~root edn =
       let source = uri.Opam.src in
       let* edn' = Edn.of_string source in
       match edn' with
-      | Edn.Archive { uri = href; archive; checksum = expected; _ } ->
-          let checksum = uri.Opam.checksum in
+      | Edn.Archive { uri = href; archive; checksums = expected; _ } ->
+          let checksums = uri.Opam.checksum in
           let* () =
-            if verify_checksum ~expected checksum
+            if verify_checksum ~expected checksums
             then Ok ()
             else
               error_msgf
@@ -63,7 +63,7 @@ let action_of_edn ~root edn =
                 Fmt.(option (any "." ++ string))
                 version in
           let version = Some uri.Opam.version in
-          Ok (Download { uri = href; archive; checksum; version; source })
+          Ok (Download { uri = href; archive; checksums; version; source })
       | Git_http { uri = href; branch; name = _ } ->
           let remote = `HTTP href in
           let origin = origin_of_edn edn' in
@@ -79,8 +79,8 @@ let action_of_edn ~root edn =
       | Local { dirpath; name = _ } -> Ok (Copy { dirpath })
       | Opam _ -> error_msgf "Invalid source for %s: %s" name source
     end
-  | Archive { uri; archive; checksum; name = _ } ->
-      Ok (Download { uri; archive; checksum; version = None; source = uri })
+  | Archive { uri; archive; checksums; name = _ } ->
+      Ok (Download { uri; archive; checksums; version = None; source = uri })
   | Git_http { uri; branch; name = _ } ->
       let remote = `HTTP uri in
       let origin = origin_of_edn edn in
@@ -94,13 +94,13 @@ let action_of_edn ~root edn =
       let origin = origin_of_edn edn in
       Ok (Clone { remote; branch; origin })
 
-let action_of_url ~checksum ~version url =
+let action_of_url ~checksums ~version url =
   let* edn = Edn.of_string url in
   match edn with
   | Edn.Archive { uri; archive; _ } ->
       (* [Edn.of_string url] never produces a checksum. *)
       let source = uri in
-      Ok (Download { uri; archive; checksum; version; source }, edn)
+      Ok (Download { uri; archive; checksums; version; source }, edn)
   | Git_http { uri; branch; _ } ->
       let action =
         Clone { remote = `HTTP uri; branch; origin = origin_of_edn edn } in
