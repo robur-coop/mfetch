@@ -10,7 +10,7 @@ type entry = {
   url : string;
       (** An opam URL: the URL of an archive, or [git+<uri>#<commit>]. It is
           self-describing: no opam root is needed to fetch it again. *)
-  checksum : Opam.hash list;  (** Empty for Git sources. *)
+  checksums : Opam.hash list;  (** Empty for Git sources. *)
   version : string option;  (** The opam version, when it comes from one. *)
   edns : Edn.t list;
       (** The specifications of [_mfetch] which resolved to this entry. Kept for
@@ -38,9 +38,9 @@ let var name value = mk (Variable (mk name, value))
 
 let to_opamfile ~file_name { target; entries } =
   let dirs =
-    let fn { url; target; checksum; _ } =
-      let checksum = List.map (Fun.compose str Opam.string_of_hash) checksum in
-      lst [ str url; str target; lst checksum ] in
+    let fn { url; target; checksums; _ } =
+      let checksums = List.map (Fun.compose str Opam.string_of_hash) checksums in
+      lst [ str url; str target; lst checksums ] in
     List.map fn entries in
   let endpoints =
     let fn { target; version; edns; _ } =
@@ -140,17 +140,18 @@ let of_opamfile opamfile =
         let* acc = acc in
         let* url = string_of_value ~ctx:field_dirs url in
         let* target = string_of_value ~ctx:field_dirs target in
-        let* checksum = strings_of_value ~ctx:field_dirs checksum in
+        let* checksums = strings_of_value ~ctx:field_dirs checksum in
         let fn acc hash =
           let* acc = acc in
           match Opam.to_checksum hash with
           | Some hash -> Ok (hash :: acc)
           | None -> error_msgf "Invalid checksum %S for %s" hash target in
-        let* checksum = List.fold_left fn (Ok []) checksum in
+        let* checksums = List.fold_left fn (Ok []) checksums in
+        let checksums = List.rev checksums in
+        let default = (None, []) in
         let version, edns =
-          Option.value ~default:(None, []) (List.assoc_opt target endpoints)
-        in
-        Ok ({ target; url; checksum = List.rev checksum; version; edns } :: acc)
+          Option.value ~default (List.assoc_opt target endpoints) in
+        Ok ({ target; url; checksums; version; edns } :: acc)
     | _ -> assert false
     (* checked by [entries_of_value] *) in
   let* entries = List.fold_left fn (Ok []) dirs in
@@ -164,9 +165,9 @@ let load filepath =
         (Printexc.to_string exn)
 
 let to_jobs { entries; _ } =
-  let fn acc { target; url; checksum; version; edns } =
+  let fn acc { target; url; checksums; version; edns } =
     let* acc = acc in
-    match Resolve.action_of_url ~checksum ~version url with
+    match Resolve.action_of_url ~checksums ~version url with
     | Error (`Msg msg) -> error_msgf "%s: %s" target msg
     | Ok (action, edn) ->
         let edns = if edns = [] then [ edn ] else edns in
@@ -177,14 +178,14 @@ let to_jobs { entries; _ } =
 
 let entry_of_job ~ls_remote { Resolve.target; edns; action; _ } =
   match action with
-  | Resolve.Download { uri; checksum = []; _ } ->
+  | Resolve.Download { uri; checksums = []; _ } ->
       error_msgf
         "%s: no checksum is known for %s, it cannot be locked (an archive \
          given verbatim in the _mfetch file has none; use the opam package \
          instead)"
         target uri
-  | Download { uri; checksum; version; _ } ->
-      Ok { target; url = uri; checksum; version; edns }
+  | Download { uri; checksums; version; _ } ->
+      Ok { target; url = uri; checksums; version; edns }
   | Copy { dirpath } ->
       error_msgf
         "%s: vendored by copy from %a, it cannot be locked (unpin it towards a \
@@ -204,7 +205,7 @@ let entry_of_job ~ls_remote { Resolve.target; edns; action; _ } =
             {
               target;
               url = Fmt.str "git+%s#%s" uri commit;
-              checksum = [];
+              checksums = [];
               version = None;
               edns;
             }
@@ -218,7 +219,7 @@ let entry_of_job ~ls_remote { Resolve.target; edns; action; _ } =
                 "%s is locked to an ssh endpoint (%s): whoever rebuilds it \
                  will need the corresponding credentials"
                 target url) ;
-          Ok { target; url; checksum = []; version = None; edns }
+          Ok { target; url; checksums = []; version = None; edns }
       | `Local _ -> assert false (* handled above *)
     end
 

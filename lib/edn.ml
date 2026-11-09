@@ -13,7 +13,7 @@ type t =
   | Archive of {
       uri : string;
       archive : archive;
-      checksum : Opam.hash list;
+      checksums : Opam.hash list;
       name : string option;
     }
   | Git_http of { uri : string; branch : string option; name : string option }
@@ -165,7 +165,7 @@ let is_package str =
   | [] | [ _ ] -> is_valid_package_name str
   | str :: _ -> is_valid_package_name str
 
-let of_string ?name ?(checksum = []) str =
+let of_string ?name ?(checksums = []) str =
   match cut ~sep:"://" str with
   | Some ("git+ssh", rem) -> decode_git_ssh_uri ?name rem
   | Some ("git+file", str) ->
@@ -208,14 +208,14 @@ let of_string ?name ?(checksum = []) str =
         | "zip" :: _ -> Ok Zip
         | _ -> error_msgf "Impossible to recoginize the given archive: %S" str
       in
-      Ok (Archive { uri = str; archive; checksum; name })
+      Ok (Archive { uri = str; archive; checksums; name })
   | Some _ -> error_msgf "Unrecognized scheme on: %S" str
   | None when is_ssh str -> decode_ssh ?name str
   | None when is_package str -> decode_package str
   | None -> error_msgf "Invalid endpoint: %S" str
 
-let of_string_exn ?checksum str =
-  match of_string ?checksum str with
+let of_string_exn ?checksums str =
+  match of_string ?checksums str with
   | Ok v -> v
   | Error (`Msg msg) -> Fmt.failwith "%s" msg
 
@@ -240,7 +240,7 @@ let to_string = function
 let pp = Fmt.of_to_string to_string
 let equal = ( = )
 
-let checksum_of_children =
+let checksums_of_children =
   let fn = function
     | { Bcfg.name = hash; parameters = [ value ]; _ } ->
         let result = Opam.to_checksum (Fmt.str "%s=%s" hash value) in
@@ -258,9 +258,9 @@ let from_filepath filepath =
         error_msgf "%a: %a" Fpath.pp filepath Bcfg.pp_error_for_human err
     | Ok cfg ->
         let fn acc { Bcfg.name = edn; parameters; children } =
-          let checksum = checksum_of_children children in
+          let checksums = checksums_of_children children in
           let name = name_of_parameters parameters in
-          match of_string ?name ~checksum edn with
+          match of_string ?name ~checksums edn with
           | Ok edn -> Map.add (to_string edn) edn acc
           | Error _ ->
               Log.warn (fun m -> m "Ignore endpoint %S" edn) ;
