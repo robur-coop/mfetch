@@ -22,7 +22,7 @@ let unable_to_delete filepath =
   | Ok () -> false
   | Error _ -> true
 
-let process ~force ~resolver ?authenticator ~progress ~dst previous mirror
+let process ~root ~force ~resolver ?authenticator ~progress ~dst previous mirror
     { target; edns; action; name } =
   let into = Fpath.(dst / target) in
   let exists = Sys.file_exists (Fpath.to_string into) in
@@ -55,7 +55,7 @@ let process ~force ~resolver ?authenticator ~progress ~dst previous mirror
                    integrity of what we're downloading!"
                   (Option.value ~default:target name)) ;
           let* () =
-            Mfetch.Archive.download ~resolver ?authenticator ~checksums
+            Mfetch.Archive.download ~resolver ?authenticator ~checksums ~root
               ~reporter ~on_total mirror (uri, archive, into) in
           Ok (Some source, version, `Archive, None)
       | Clone { remote; branch; origin } ->
@@ -126,7 +126,6 @@ let show_results results =
 let items_of ~root ~filepath ~lock ~target =
   match lock with
   | None ->
-      let* root = root in
       let* edns = Mfetch.Edn.from_filepath filepath in
       Ok (coalesce ~root edns)
   | Some lock ->
@@ -145,6 +144,7 @@ let run_fetch quiet root filepath lock target with_dune_file force jobs
   Mirage_crypto_rng_unix.use_default () ;
   Miou_unix.run ~domains @@ fun () ->
   let result =
+    let* root = root in
     let* items = items_of ~root ~filepath ~lock ~target in
     let daemon, happy_eyeballs = Happy_eyeballs_miou_unix.create () in
     let@ () = fun () -> Happy_eyeballs_miou_unix.kill daemon in
@@ -166,8 +166,8 @@ let run_fetch quiet root filepath lock target with_dune_file force jobs
         | None -> List.rev acc
         | Some job ->
             let v =
-              process ~force ~resolver ?authenticator ~progress ~dst:target
-                previous mirror job in
+              process ~root ~force ~resolver ?authenticator ~progress
+                ~dst:target previous mirror job in
             go ((job.target, v) :: acc) in
       go [] in
     let results =

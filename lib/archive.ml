@@ -198,7 +198,7 @@ let from_cache ~checksums file =
       let fn () = (file, String.length str) in
       verify ~source feeders |> Result.map fn |> Result.to_option
 
-let locations ~home ~mirror checksums =
+let locations ~root ~mirror checksums =
   let algorithm = function
     | `MD5 -> Some "md5"
     | `SHA256 -> Some "sha256"
@@ -212,12 +212,12 @@ let locations ~home ~mirror checksums =
         let prefix = String.sub hex 0 2 in
         let uri = Fmt.str "%s/cache/%s/%s/%s" mirror alg prefix hex in
         let in_cache =
-          Fpath.(home / ".opam" / "download-cache" / alg / prefix / hex) in
+          Fpath.(root / "download-cache" / alg / prefix / hex) in
         let files = in_cache :: files in
         (files, uri :: uris) in
   List.fold_left fn ([], []) checksums
 
-let download ~resolver ?authenticator ~checksums ?(reporter = ignore)
+let download ~root ~resolver ?authenticator ~checksums ?(reporter = ignore)
     ?(on_total = ignore) mirror (uri, kind, into) =
   let* () =
     if Sys.file_exists (Fpath.to_string into)
@@ -228,8 +228,7 @@ let download ~resolver ?authenticator ~checksums ?(reporter = ignore)
   let tmp = Fpath.(dirpath / Fmt.str ".mfetch.%s.tmp" (basename into)) in
   let* _ = Bos.OS.Dir.delete ~recurse:true tmp in
   let* _ = Bos.OS.Dir.create ~path:true tmp in
-  let* home = Bos.OS.Dir.user () in
-  let files, mirrors = locations ~home ~mirror checksums in
+  let files, mirrors = locations ~root ~mirror checksums in
   let retrieve_and_extract () =
     match List.find_map (from_cache ~checksums) files with
     | Some (file, len) ->
