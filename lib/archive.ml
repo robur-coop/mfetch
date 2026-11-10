@@ -115,9 +115,6 @@ let untar_into ~kind dst from =
   let (), leftover = Flux.Stream.run ~from ~via ~into in
   Option.iter Flux.Source.dispose leftover
 
-let is_redirection (resp : Httpcats.response) =
-  H2.Status.is_redirection resp.Httpcats.status
-
 let once fn =
   let called = ref false in
   fun v ->
@@ -141,8 +138,87 @@ let promote ~tmp ~into =
       Unix.rmdir (Fpath.to_string tmp)
   | _ -> Unix.rename (Fpath.to_string tmp) (Fpath.to_string into)
 
-let download ~resolver ?authenticator ?(checksums = []) ?(reporter = ignore)
-    ?(on_total = ignore) (uri, kind, into) =
+let digests checksums =
+  List.map (fun (Opam.Hash (k, e)) -> Digest.of_hash k e) checksums
+
+let verify ~source feeders =
+  if List.for_all (fun { Digest.get; _ } -> get ()) feeders
+  then Ok ()
+  else begin
+    Log.warn (fun m -> m "Invalid checksum for %s" source) ;
+    error_msgf "Invalid checksum for %s" source
+  end
+
+let fetch ~resolver ?authenticator ~checksums ~reporter ~on_total filename uri =
+  try
+    let oc = open_out_bin filename in
+    let@ () = fun () -> close_out_noerr oc in
+    let feeders = digests checksums in
+    let on_total = once on_total in
+    let fn _meta _req (resp : Httpcats.response) () = function
+      | Some str when H2.Status.is_successful resp.Httpcats.status ->
+          let hdrs = resp.Httpcats.headers in
+          let content_length = Httpcats.Headers.get hdrs "content-length" in
+          on_total (Option.bind content_length int_of_string_opt) ;
+          List.iter (fun { Digest.feed; _ } -> feed str) feeders ;
+          reporter (String.length str) ;
+          output_string oc str
+      | _ -> () in
+    let follow_redirect = true in
+    let result =
+      Httpcats.request ~resolver ?authenticator ~follow_redirect ~fn ~uri ()
+    in
+    flush oc ;
+    match result with
+    | Ok (resp, ()) when H2.Status.is_successful resp.Httpcats.status ->
+        verify ~source:uri feeders
+    | Ok (resp, ()) ->
+        error_msgf "%s: unexpected status %d" uri
+          (H2.Status.to_code resp.Httpcats.status)
+    | Error err -> error_msgf "%s: %a" uri Httpcats.pp_error err
+  with exn -> error_msgf "%s: %s" uri (Printexc.to_string exn)
+
+let extract kind dst filename =
+  try
+    let from = Flux.Source.in_channel (open_in_bin filename) in
+    let@ () = fun () -> inhibit @@ fun () -> Flux.Source.dispose from in
+    unarchive kind dst from ;
+    Ok ()
+  with
+  | Failure msg -> Error (`Msg msg)
+  | exn -> error_msgf "%s" (Printexc.to_string exn)
+
+let from_cache ~checksums file =
+  match Bos.OS.File.read file with
+  | Error _ -> None
+  | Ok str ->
+      let feeders = digests checksums in
+      List.iter (fun { Digest.feed; _ } -> feed str) feeders ;
+      let source = Fpath.to_string file in
+      let fn () = (file, String.length str) in
+      verify ~source feeders |> Result.map fn |> Result.to_option
+
+let locations ~root ~mirror checksums =
+  let algorithm = function
+    | `MD5 -> Some "md5"
+    | `SHA256 -> Some "sha256"
+    | `SHA512 -> Some "sha512"
+    | _ -> None in
+  let fn ((files, uris) as acc) (Opam.Hash (k, v)) =
+    match algorithm (Digestif.hash_to_hash' k) with
+    | None -> acc
+    | Some alg ->
+        let hex = Digestif.to_hex k v in
+        let prefix = String.sub hex 0 2 in
+        let uri = Fmt.str "%s/cache/%s/%s/%s" mirror alg prefix hex in
+        let in_cache =
+          Fpath.(root / "download-cache" / alg / prefix / hex) in
+        let files = in_cache :: files in
+        (files, uri :: uris) in
+  List.fold_left fn ([], []) checksums
+
+let download ~root ~resolver ?authenticator ~checksums ?(reporter = ignore)
+    ?(on_total = ignore) mirror (uri, kind, into) =
   let* () =
     if Sys.file_exists (Fpath.to_string into)
     then error_msgf "%a already exists" Fpath.pp into
@@ -152,58 +228,41 @@ let download ~resolver ?authenticator ?(checksums = []) ?(reporter = ignore)
   let tmp = Fpath.(dirpath / Fmt.str ".mfetch.%s.tmp" (basename into)) in
   let* _ = Bos.OS.Dir.delete ~recurse:true tmp in
   let* _ = Bos.OS.Dir.create ~path:true tmp in
-  let q = Flux.Bqueue.(create with_close_and_halt) 0x7ff in
-  let push str = inhibit @@ fun () -> Flux.Bqueue.put q str in
-  let on_total = once on_total in
-  let feeders =
-    List.map (fun (Opam.Hash (k, e)) -> Digest.of_hash k e) checksums in
-  let fn _meta _req (resp : Httpcats.response) () = function
-    | Some str when not (is_redirection resp) ->
-        let hdrs = resp.Httpcats.headers in
-        let content_length = Httpcats.Headers.get hdrs "content-length" in
-        let total = Option.bind content_length int_of_string_opt in
-        on_total total ;
-        List.iter (fun { Digest.feed; _ } -> feed str) feeders ;
-        reporter (String.length str) ;
-        push str
-    | _ -> () in
-  let prm =
-    Miou.async @@ fun () ->
-    let@ () = fun () -> inhibit @@ fun () -> Flux.Bqueue.close q in
-    Httpcats.request ~resolver ?authenticator ~follow_redirect:true ~fn ~uri ()
-  in
-  let from = Flux.Source.bqueue ~stop:`Halt q in
+  let files, mirrors = locations ~root ~mirror checksums in
+  let retrieve_and_extract () =
+    match List.find_map (from_cache ~checksums) files with
+    | Some (file, len) ->
+        on_total (Some len) ;
+        reporter len ;
+        extract kind tmp (Fpath.to_string file)
+    | None ->
+        let archive = Fmt.str ".mfetch.%s.archive" (Fpath.basename into) in
+        let archive = Fpath.(dirpath / archive) in
+        let archive = Fpath.to_string archive in
+        let@ () = fun () -> inhibit @@ fun () -> Sys.remove archive in
+        let fn acc uri =
+          match acc with
+          | Ok () as value -> value
+          | Error _ ->
+              let result =
+                fetch ~resolver ?authenticator ~checksums ~reporter ~on_total
+                  archive uri in
+              let log (`Msg msg) = Log.info (fun m -> m "%s" msg) in
+              Result.iter_error log result ;
+              result in
+        let* () = List.fold_left fn (error_msgf "<none>") (mirrors @ [ uri ]) in
+        extract kind tmp archive in
   let result =
-    try
-      unarchive kind tmp from ;
-      Ok ()
-    with
-    | Failure msg -> Error (`Msg msg)
-    | exn -> error_msgf "%s" (Printexc.to_string exn) in
-  Flux.Source.dispose from ;
-  let result =
-    Result.iter_error (fun _ -> Miou.cancel prm) result ;
-    let* () = result in
-    let* () =
-      match Miou.await prm with
-      | Ok (Ok _resp) -> Ok ()
-      | Ok (Error err) -> error_msgf "%s: %a" uri Httpcats.pp_error err
-      | Error exn -> error_msgf "%s: %s" uri (Printexc.to_string exn) in
-    let fn acc { Digest.get; _ } =
-      match acc with
-      | Ok () when get () -> Ok ()
-      | _ -> error_msgf "Invalid checksum for %s" uri in
-    let* () = List.fold_left fn (Ok ()) feeders in
+    let* () = retrieve_and_extract () in
     match promote ~tmp ~into with
     | () -> Ok ()
     | exception exn ->
         error_msgf "Unable to promote %a: %s" Fpath.pp into
           (Printexc.to_string exn) in
-  match result with
-  | Ok _ as value -> value
-  | Error err ->
-      let _ = Bos.OS.Dir.delete ~recurse:true tmp in
-      Error err
+  Result.iter_error
+    (fun _ -> ignore (Bos.OS.Dir.delete ~recurse:true tmp))
+    result ;
+  result
 
 let excluded = [ ".git"; ".hg"; "_darcs"; "_build"; "_opam"; ".mfetch.state" ]
 
