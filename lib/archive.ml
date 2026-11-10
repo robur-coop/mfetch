@@ -115,9 +115,6 @@ let untar_into ~kind dst from =
   let (), leftover = Flux.Stream.run ~from ~via ~into in
   Option.iter Flux.Source.dispose leftover
 
-let is_redirection (resp : Httpcats.response) =
-  H2.Status.is_redirection resp.Httpcats.status
-
 let once fn =
   let called = ref false in
   fun v ->
@@ -141,48 +138,84 @@ let promote ~tmp ~into =
       Unix.rmdir (Fpath.to_string tmp)
   | _ -> Unix.rename (Fpath.to_string tmp) (Fpath.to_string into)
 
-let download_and_check ~resolver ?authenticator ~checksums ?(reporter = ignore)
-    ?(on_total = ignore) (uri, kind, _) tmp =
-  let q = Flux.Bqueue.(create with_close_and_halt) 0x7ff in
-  let push str = inhibit @@ fun () -> Flux.Bqueue.put q str in
-  let on_total = once on_total in
-  let feeders =
-    List.map (fun (Opam.Hash (k, e)) -> Digest.of_hash k e) checksums in
-  let fn _meta _req (resp : Httpcats.response) () = function
-    | Some str when not (is_redirection resp) ->
-        let hdrs = resp.Httpcats.headers in
-        let content_length = Httpcats.Headers.get hdrs "content-length" in
-        let total = Option.bind content_length int_of_string_opt in
-        on_total total ;
-        List.iter (fun { Digest.feed; _ } -> feed str) feeders ;
-        reporter (String.length str) ;
-        push str
-    | _ -> () in
-  let prm =
-    Miou.async @@ fun () ->
-    let@ () = fun () -> inhibit @@ fun () -> Flux.Bqueue.close q in
-    Httpcats.request ~resolver ?authenticator ~follow_redirect:true ~fn ~uri ()
-  in
-  let fn acc { Digest.get; _ } =
-    match acc with
-    | Ok () when get () -> Ok ()
-    | _ -> error_msgf "Invalid checksum for %s" uri in
-  let* () = List.fold_left fn (Ok ()) feeders in
-  let from = Flux.Source.bqueue ~stop:`Halt q in
-  let result =
-    try
-      unarchive kind tmp from ;
-      Ok ()
-    with
-    | Failure msg -> Error (`Msg msg)
-    | exn -> error_msgf "%s" (Printexc.to_string exn) in
-  Flux.Source.dispose from ;
-  Result.iter_error (fun _ -> Miou.cancel prm) result ;
-  let* () = result in
-  match Miou.await prm with
-  | Ok (Ok _resp) -> Ok ()
-  | Ok (Error err) -> error_msgf "%s: %a" uri Httpcats.pp_error err
-  | Error exn -> error_msgf "%s: %s" uri (Printexc.to_string exn)
+let digests checksums =
+  List.map (fun (Opam.Hash (k, e)) -> Digest.of_hash k e) checksums
+
+let verify ~source feeders =
+  if List.for_all (fun { Digest.get; _ } -> get ()) feeders
+  then Ok ()
+  else begin
+    Log.warn (fun m -> m "Invalid checksum for %s" source) ;
+    error_msgf "Invalid checksum for %s" source
+  end
+
+let fetch ~resolver ?authenticator ~checksums ~reporter ~on_total filename uri =
+  try
+    let oc = open_out_bin filename in
+    let@ () = fun () -> close_out_noerr oc in
+    let feeders = digests checksums in
+    let on_total = once on_total in
+    let fn _meta _req (resp : Httpcats.response) () = function
+      | Some str when H2.Status.is_successful resp.Httpcats.status ->
+          let hdrs = resp.Httpcats.headers in
+          let content_length = Httpcats.Headers.get hdrs "content-length" in
+          on_total (Option.bind content_length int_of_string_opt) ;
+          List.iter (fun { Digest.feed; _ } -> feed str) feeders ;
+          reporter (String.length str) ;
+          output_string oc str
+      | _ -> () in
+    let follow_redirect = true in
+    let result =
+      Httpcats.request ~resolver ?authenticator ~follow_redirect ~fn ~uri ()
+    in
+    flush oc ;
+    match result with
+    | Ok (resp, ()) when H2.Status.is_successful resp.Httpcats.status ->
+        verify ~source:uri feeders
+    | Ok (resp, ()) ->
+        error_msgf "%s: unexpected status %d" uri
+          (H2.Status.to_code resp.Httpcats.status)
+    | Error err -> error_msgf "%s: %a" uri Httpcats.pp_error err
+  with exn -> error_msgf "%s: %s" uri (Printexc.to_string exn)
+
+let extract kind dst filename =
+  try
+    let from = Flux.Source.in_channel (open_in_bin filename) in
+    let@ () = fun () -> inhibit @@ fun () -> Flux.Source.dispose from in
+    unarchive kind dst from ;
+    Ok ()
+  with
+  | Failure msg -> Error (`Msg msg)
+  | exn -> error_msgf "%s" (Printexc.to_string exn)
+
+let from_cache ~checksums file =
+  match Bos.OS.File.read file with
+  | Error _ -> None
+  | Ok str ->
+      let feeders = digests checksums in
+      List.iter (fun { Digest.feed; _ } -> feed str) feeders ;
+      let source = Fpath.to_string file in
+      let fn () = (file, String.length str) in
+      verify ~source feeders |> Result.map fn |> Result.to_option
+
+let locations ~home ~mirror checksums =
+  let algorithm = function
+    | `MD5 -> Some "md5"
+    | `SHA256 -> Some "sha256"
+    | `SHA512 -> Some "sha512"
+    | _ -> None in
+  let fn ((files, uris) as acc) (Opam.Hash (k, v)) =
+    match algorithm (Digestif.hash_to_hash' k) with
+    | None -> acc
+    | Some alg ->
+        let hex = Digestif.to_hex k v in
+        let prefix = String.sub hex 0 2 in
+        let uri = Fmt.str "%s/cache/%s/%s/%s" mirror alg prefix hex in
+        let in_cache =
+          Fpath.(home / ".opam" / "download-cache" / alg / prefix / hex) in
+        let files = in_cache :: files in
+        (files, uri :: uris) in
+  List.fold_left fn ([], []) checksums
 
 let download ~resolver ?authenticator ~checksums ?(reporter = ignore)
     ?(on_total = ignore) mirror (uri, kind, into) =
@@ -195,100 +228,42 @@ let download ~resolver ?authenticator ~checksums ?(reporter = ignore)
   let tmp = Fpath.(dirpath / Fmt.str ".mfetch.%s.tmp" (basename into)) in
   let* _ = Bos.OS.Dir.delete ~recurse:true tmp in
   let* _ = Bos.OS.Dir.create ~path:true tmp in
-  let files, mirror_uris =
-    let fn (files, urls) checksum =
-      let (Opam.Hash (alg, v)) = checksum in
-      let hex = Digestif.to_hex alg v in
-      begin
-        let* alg =
-          match Digestif.hash_to_hash' alg with
-          | `SHA256 -> Ok "sha256"
-          | `SHA512 -> Ok "sha512"
-          | _ -> error_msgf "No opam-supported hash" in
-        let* home = Bos.OS.Dir.user () in
-        let prefix = String.sub hex 0 2 in
-        let file =
-          Fpath.(home / ".opam" / "download-cache" / alg / prefix / hex) in
-        let url = Fmt.str "%s/cache/%s/%s/%s" mirror alg prefix hex in
-        Ok (file, url)
-      end
-      |> function
-      | Error _ -> (files, urls)
-      | Ok (file, url) -> (file :: files, url :: urls) in
-    List.fold_left fn ([], []) checksums in
-  let file =
-    let fn acc file =
-      match acc with
-      | Ok _ as value -> value
-      | Error _ -> begin
-          let q = Flux.Bqueue.(create with_close_and_halt) 0x7ff in
-          begin
-            let fn (Opam.Hash (k, e)) = Digest.of_hash k e in
-            let feeders = List.map fn checksums in
-            let* str = Bos.OS.File.read file in
-            List.iter (fun { Digest.feed; _ } -> feed str) feeders ;
-            let fn acc { Digest.get; _ } =
-              match acc with
-              | Ok () when get () -> Ok ()
-              | _ -> error_msgf "Invalid checksum for %s" uri in
-            let* () = List.fold_left fn (Ok ()) feeders in
-            on_total (Some (String.length str)) ;
-            reporter (String.length str) ;
-            Ok (inhibit @@ fun () -> Flux.Bqueue.put q str)
-          end
-          |> function
-          | Ok () -> Ok q
-          | Error _ as err -> err
-        end in
-    List.fold_left fn (error_msgf "<none>") files in
-  match file with
-  | Ok q -> begin
-      let () = inhibit @@ fun () -> Flux.Bqueue.close q in
-      let from = Flux.Source.bqueue ~stop:`Halt q in
-      let result =
-        try
-          unarchive kind tmp from ;
-          Ok ()
-        with
-        | Failure msg -> Error (`Msg msg)
-        | exn -> error_msgf "%s" (Printexc.to_string exn) in
-      Flux.Source.dispose from ;
-      let result =
-        let* () = result in
-        match promote ~tmp ~into with
-        | () -> Ok ()
-        | exception exn ->
-            error_msgf "Unable to promote %a: %s" Fpath.pp into
-              (Printexc.to_string exn) in
-      match result with
-      | Ok _ as value -> value
-      | Error err ->
-          let _ = Bos.OS.Dir.delete ~recurse:true tmp in
-          Error err
-    end
-  | Error _ -> begin
-      begin
-        let* () =
-          let fn acc uri =
-            match acc with
-            | Ok _ as value -> value
-            | Error _ ->
-                let target = (uri, kind, into) in
-                download_and_check ~resolver ?authenticator ~checksums ~reporter
-                  ~on_total target tmp in
-          List.fold_left fn (error_msgf "<none>") (mirror_uris @ [ uri ]) in
-        match promote ~tmp ~into with
-        | () -> Ok ()
-        | exception exn ->
-            error_msgf "Unable to promote %a: %s" Fpath.pp into
-              (Printexc.to_string exn)
-      end
-      |> function
-      | Ok _ as value -> value
-      | Error err ->
-          let _ = Bos.OS.Dir.delete ~recurse:true tmp in
-          Error err
-    end
+  let* home = Bos.OS.Dir.user () in
+  let files, mirrors = locations ~home ~mirror checksums in
+  let retrieve_and_extract () =
+    match List.find_map (from_cache ~checksums) files with
+    | Some (file, len) ->
+        on_total (Some len) ;
+        reporter len ;
+        extract kind tmp (Fpath.to_string file)
+    | None ->
+        let archive = Fmt.str ".mfetch.%s.archive" (Fpath.basename into) in
+        let archive = Fpath.(dirpath / archive) in
+        let archive = Fpath.to_string archive in
+        let@ () = fun () -> inhibit @@ fun () -> Sys.remove archive in
+        let fn acc uri =
+          match acc with
+          | Ok () as value -> value
+          | Error _ ->
+              let result =
+                fetch ~resolver ?authenticator ~checksums ~reporter ~on_total
+                  archive uri in
+              let log (`Msg msg) = Log.info (fun m -> m "%s" msg) in
+              Result.iter_error log result ;
+              result in
+        let* () = List.fold_left fn (error_msgf "<none>") (mirrors @ [ uri ]) in
+        extract kind tmp archive in
+  let result =
+    let* () = retrieve_and_extract () in
+    match promote ~tmp ~into with
+    | () -> Ok ()
+    | exception exn ->
+        error_msgf "Unable to promote %a: %s" Fpath.pp into
+          (Printexc.to_string exn) in
+  Result.iter_error
+    (fun _ -> ignore (Bos.OS.Dir.delete ~recurse:true tmp))
+    result ;
+  result
 
 let excluded = [ ".git"; ".hg"; "_darcs"; "_build"; "_opam"; ".mfetch.state" ]
 
