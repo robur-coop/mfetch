@@ -198,26 +198,31 @@ let from_cache ~checksums file =
       let fn () = (file, String.length str) in
       verify ~source feeders |> Result.map fn |> Result.to_option
 
-let locations ~root ?mirror checksums =
+let locations ~root ~mirrors checksums =
   let algorithm = function
     | `MD5 -> Some "md5"
     | `SHA256 -> Some "sha256"
     | `SHA512 -> Some "sha512"
     | _ -> None in
-  let fn ((files, uris) as acc) (Opam.Hash (k, v)) =
-    match (algorithm (Digestif.hash_to_hash' k), mirror) with
-    | Some alg, Some mirror ->
+  let fn (files, rev_uris) (Opam.Hash (k, v)) =
+    match algorithm (Digestif.hash_to_hash' k) with
+    | Some alg ->
         let hex = Digestif.to_hex k v in
         let prefix = String.sub hex 0 2 in
-        let uri = Fmt.str "%s/cache/%s/%s/%s" mirror alg prefix hex in
+        let uris' =
+          List.rev_map (fun mirror ->
+              Fmt.str "%s/cache/%s/%s/%s" mirror alg prefix hex)
+            mirrors
+        in
         let in_cache = Fpath.(root / "download-cache" / alg / prefix / hex) in
         let files = in_cache :: files in
-        (files, uri :: uris)
-    | _ -> acc in
+        (files, uris' @ rev_uris)
+    | None ->
+      files, List.rev rev_uris in
   List.fold_left fn ([], []) checksums
 
 let download ~root ~resolver ?authenticator ~checksums ?(reporter = ignore)
-    ?(on_total = ignore) ?mirror (uri, kind, into) =
+    ?(on_total = ignore) ~mirrors (uri, kind, into) =
   let* () =
     if Sys.file_exists (Fpath.to_string into)
     then error_msgf "%a already exists" Fpath.pp into
@@ -227,7 +232,7 @@ let download ~root ~resolver ?authenticator ~checksums ?(reporter = ignore)
   let tmp = Fpath.(dirpath / Fmt.str ".mfetch.%s.tmp" (basename into)) in
   let* _ = Bos.OS.Dir.delete ~recurse:true tmp in
   let* _ = Bos.OS.Dir.create ~path:true tmp in
-  let files, mirrors = locations ~root ?mirror checksums in
+  let files, mirrors = locations ~root ~mirrors checksums in
   Log.debug (fun m -> m "files: @[<hov>%a@]" Fmt.(Dump.list Fpath.pp) files) ;
   Log.debug (fun m -> m "mirrors: @[<hov>%a@]" Fmt.(Dump.list string) mirrors) ;
   let retrieve_and_extract () =

@@ -22,7 +22,7 @@ let unable_to_delete filepath =
   | Ok () -> false
   | Error _ -> true
 
-let process ~root ~force ~resolver ?authenticator ?mirror ~progress ~dst
+let process ~root ~force ~resolver ?authenticator ~mirrors ~progress ~dst
     previous { target; edns; action; name } =
   let into = Fpath.(dst / target) in
   let exists = Sys.file_exists (Fpath.to_string into) in
@@ -56,7 +56,7 @@ let process ~root ~force ~resolver ?authenticator ?mirror ~progress ~dst
                   (Option.value ~default:target name)) ;
           let* () =
             Mfetch.Archive.download ~resolver ?authenticator ~checksums ~root
-              ~reporter ~on_total ?mirror (uri, archive, into) in
+              ~reporter ~on_total ~mirrors (uri, archive, into) in
           Ok (Some source, version, `Archive, None)
       | Clone { remote; branch; origin } ->
           let* head =
@@ -139,7 +139,7 @@ let items_of ~root ~filepath ~lock ~target =
       Mfetch.Lock.to_jobs lock
 
 let run_fetch quiet root filepath lock target with_dune_file force jobs
-    no_progress (config, columns) domains authenticator mirror =
+    no_progress (config, columns) domains authenticator mirrors =
   Sys.set_signal Sys.sigpipe Sys.Signal_ignore ;
   Mirage_crypto_rng_unix.use_default () ;
   Miou_unix.run ~domains @@ fun () ->
@@ -166,7 +166,7 @@ let run_fetch quiet root filepath lock target with_dune_file force jobs
         | None -> List.rev acc
         | Some job ->
             let v =
-              process ~root ~force ~resolver ?authenticator ?mirror ~progress
+              process ~root ~force ~resolver ?authenticator ~mirrors ~progress
                 ~dst:target previous job in
             go ((job.target, v) :: acc) in
       go [] in
@@ -314,7 +314,7 @@ let term =
   $ setup_progress
   $ domains
   $ setup_authenticator
-  $ mirror
+  $ mirrors
 
 let fetch =
   let doc = "Fetch and vendor the sources listed in the $(b,_mfetch) file." in

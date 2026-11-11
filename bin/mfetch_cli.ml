@@ -163,8 +163,8 @@ let setup_authenticator () =
 
 let setup_authenticator = Term.(const setup_authenticator $ const ())
 
-let mirror =
+let mirrors =
   let doc = "An opam mirror." in
-  let vopt = Some "https://opam.robur.coop" in
+  let vopt = "https://opam.robur.coop" in
   let open Arg in
-  value & opt ~vopt (some string) None & info [ "mirror" ] ~doc ~docv:"URL"
+  value & opt_all ~vopt string [] & info [ "mirror" ] ~doc ~docv:"URL"
