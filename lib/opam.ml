@@ -108,12 +108,11 @@ module Lock = struct
         Hashtbl.replace locks fd () ;
         let current = { fd = Some fd; filepath; flag = `Lock_none } in
         Log.debug (fun m -> m "=> %a" pp_lock flag) ;
-        begin
-          try update ~block flag current
-          with exn ->
-            Hashtbl.remove locks fd ;
-            Unix.close fd ;
-            raise exn
+        begin try update ~block flag current
+        with exn ->
+          Hashtbl.remove locks fd ;
+          Unix.close fd ;
+          raise exn
         end ;
         current
 
@@ -243,7 +242,8 @@ let current_switch ~root =
   then
     Log.debug (fun m ->
         m "Another process has locked %a, reading %a anyway" Fpath.pp filepath
-          Fpath.pp Fpath.(root / "config")) ;
+          Fpath.pp
+          Fpath.(root / "config")) ;
   let@ () = fun () -> Option.iter (Lock.update `Lock_none) lock in
   match OpamParser.FullPos.file Fpath.(to_string (root / "config")) with
   | cfg -> get_current_switch cfg
