@@ -22,8 +22,8 @@ let unable_to_delete filepath =
   | Ok () -> false
   | Error _ -> true
 
-let process ~root ~force ~resolver ?authenticator ~progress ~dst previous mirror
-    { target; edns; action; name } =
+let process ~root ~force ~resolver ?authenticator ?mirror ~progress ~dst
+    previous { target; edns; action; name } =
   let into = Fpath.(dst / target) in
   let exists = Sys.file_exists (Fpath.to_string into) in
   if exists && not force
@@ -56,7 +56,7 @@ let process ~root ~force ~resolver ?authenticator ~progress ~dst previous mirror
                   (Option.value ~default:target name)) ;
           let* () =
             Mfetch.Archive.download ~resolver ?authenticator ~checksums ~root
-              ~reporter ~on_total mirror (uri, archive, into) in
+              ~reporter ~on_total ?mirror (uri, archive, into) in
           Ok (Some source, version, `Archive, None)
       | Clone { remote; branch; origin } ->
           let* head =
@@ -166,8 +166,8 @@ let run_fetch quiet root filepath lock target with_dune_file force jobs
         | None -> List.rev acc
         | Some job ->
             let v =
-              process ~root ~force ~resolver ?authenticator ~progress
-                ~dst:target previous mirror job in
+              process ~root ~force ~resolver ?authenticator ?mirror ~progress
+                ~dst:target previous job in
             go ((job.target, v) :: acc) in
       go [] in
     let results =
