@@ -210,15 +210,13 @@ let locations ~root ~mirrors checksums =
         let hex = Digestif.to_hex k v in
         let prefix = String.sub hex 0 2 in
         let uris' =
-          List.map (fun mirror ->
-              Fmt.str "%s/cache/%s/%s/%s" mirror alg prefix hex)
-            mirrors
-        in
+          List.map
+            (fun mirror -> Fmt.str "%s/cache/%s/%s/%s" mirror alg prefix hex)
+            mirrors in
         let in_cache = Fpath.(root / "download-cache" / alg / prefix / hex) in
         let files = in_cache :: files in
         (files, uris' @ rev_uris)
-    | None ->
-      files, List.rev rev_uris in
+    | None -> (files, List.rev rev_uris) in
   List.fold_left fn ([], []) checksums
 
 let download ~root ~resolver ?authenticator ~checksums ?(reporter = ignore)
