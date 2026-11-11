@@ -6,10 +6,14 @@
   (@dinosaure, [!16][16])
 - Be able to use a mirror instead of direct artifacts (like GitHub artifacts)
   (@hannesm, @dinosaure, [!14][14])
+- Fix our `--mirror` option (the default behavior is to not use direct artifact)
+  and be able to retrieve archives from a mirror (defaults to
+  https://opam.ocaml.org/) (@dinosaure, @hannesm, [!18][18])
 
 [14]: https://git.robur.coop/robur/mfetch/pulls/14
 [15]: https://git.robur.coop/robur/mfetch/pulls/15
 [16]: https://git.robur.coop/robur/mfetch/pulls/16
+[18]: https://git.robur.coop/robur/mfetch/pulls/18
 
 # v0.1.1 (2026-09-09)
 
