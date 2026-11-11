@@ -210,7 +210,7 @@ let locations ~root ~mirrors checksums =
         let hex = Digestif.to_hex k v in
         let prefix = String.sub hex 0 2 in
         let uris' =
-          List.rev_map (fun mirror ->
+          List.map (fun mirror ->
               Fmt.str "%s/cache/%s/%s/%s" mirror alg prefix hex)
             mirrors
         in
